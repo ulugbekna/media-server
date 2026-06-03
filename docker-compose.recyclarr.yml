@@ -1,0 +1,44 @@
+# =============================================================================
+# Recyclarr override.
+#
+# Recyclarr auto-applies the TRaSH-Guides (https://trash-guides.info/) quality
+# profiles, custom formats, and naming schemes to Sonarr and Radarr. Hands-off
+# way to upgrade from "Sonarr grabs the first 720p that matches" to "Sonarr
+# grabs a proper 1080p WEB-DL from a release group with good reputation, skips
+# known-bad encoders, falls back gracefully".
+#
+# This container runs on a schedule (default: daily at 04:00) and re-syncs the
+# TRaSH definitions into Sonarr/Radarr. The first run happens immediately so
+# you see results without waiting.
+#
+# Usage:
+#   setup.ps1 -Recyclarr     (Windows)
+#   ./setup.sh --recyclarr   (Linux/macOS)
+#
+# Or manually:
+#   docker compose -f docker-compose.yml -f docker-compose.recyclarr.yml up -d
+#
+# The recyclarr-config.template.yml in the repo root is rendered by the setup
+# script into config/recyclarr/recyclarr.yml with your Sonarr/Radarr API keys
+# substituted in.
+# =============================================================================
+
+services:
+  recyclarr:
+    # tag: ghcr.io/recyclarr/recyclarr:latest
+    image: ghcr.io/recyclarr/recyclarr@sha256:55afe316d3e4e4e3b9120cef7c79436b1b5311f6a18d4ef4b7653e720499c90a
+    container_name: recyclarr
+    user: "${PUID:-1000}:${PGID:-1000}"
+    volumes:
+      - ${CONFIG_ROOT}/recyclarr:/config
+    environment:
+      - TZ=${TZ:-UTC}
+      # Cron schedule for periodic sync (default: daily at 04:00).
+      # Recyclarr re-pulls TRaSH definitions and re-applies on each run.
+      - CRON_SCHEDULE=${RECYCLARR_CRON_SCHEDULE:-0 4 * * *}
+    restart: unless-stopped
+    depends_on:
+      sonarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy

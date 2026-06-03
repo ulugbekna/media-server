@@ -30,6 +30,10 @@
     your phone. Requires TELEGRAM_BOT_TOKEN to be set in .env (get a
     token from @BotFather; see README "Telegram requests").
 
+.PARAMETER Recyclarr
+    Apply the TRaSH-Guides quality profiles, custom formats, and naming
+    schemes to Sonarr and Radarr. Runs immediately and then daily at 04:00.
+
 .EXAMPLE
     .\setup.ps1
     Uses default paths under the current directory.
@@ -42,8 +46,8 @@
     Same as above but routes qBittorrent through the VPN.
 
 .EXAMPLE
-    .\setup.ps1 -Vpn -Telegram
-    Full stack: VPN + Telegram request bot.
+    .\setup.ps1 -Vpn -Telegram -Recyclarr
+    Everything: VPN + Telegram requests + TRaSH-Guides profiles.
 #>
 
 [CmdletBinding()]
@@ -53,7 +57,8 @@ param(
     [string]$ConfigRoot,
     [string]$Timezone,
     [switch]$Vpn,
-    [switch]$Telegram
+    [switch]$Telegram,
+    [switch]$Recyclarr
 )
 
 $ErrorActionPreference = "Stop"
@@ -130,7 +135,8 @@ $folders = @(
     "$ConfigRoot\bazarr",
     "$ConfigRoot\overseerr",
     "$ConfigRoot\searcharr\data",
-    "$ConfigRoot\searcharr\logs"
+    "$ConfigRoot\searcharr\logs",
+    "$ConfigRoot\recyclarr"
 )
 foreach ($f in $folders) {
     if (-not (Test-Path -LiteralPath $f)) {
@@ -290,8 +296,9 @@ if ($Telegram) {
 # -----------------------------------------------------------------------------
 Write-Step "Pulling images"
 $pullExtras = @()
-if ($Vpn)      { $pullExtras += "Gluetun" }
-if ($Telegram) { $pullExtras += "Searcharr" }
+if ($Vpn)       { $pullExtras += "Gluetun" }
+if ($Telegram)  { $pullExtras += "Searcharr" }
+if ($Recyclarr) { $pullExtras += "Recyclarr" }
 $extraText = if ($pullExtras.Count -gt 0) { " + " + ($pullExtras -join " + ") } else { "" }
 Write-WarnMsg "Initial pull is ~4 GB (Prowlarr + qBit + Sonarr + Radarr + Bazarr + Overseerr$extraText)."
 Write-WarnMsg "On a typical 50 Mbps connection this takes 10-15 minutes."
@@ -416,6 +423,80 @@ if ($Telegram) {
 }
 
 # -----------------------------------------------------------------------------
+# 7c. Recyclarr — render config and start container
+# -----------------------------------------------------------------------------
+if ($Recyclarr) {
+    Write-Step "Configuring Recyclarr"
+    if (-not $sonarrKey -or -not $radarrKey) {
+        Write-ErrMsg "Cannot configure Recyclarr: Sonarr/Radarr API keys not found yet."
+        Write-Host  "    Give the services another minute to initialise, then re-run with -Recyclarr."
+    } else {
+        $recyclarrRoot = Join-Path $ConfigRoot "recyclarr"
+        $recyclarrConfigs = Join-Path $recyclarrRoot "configs"
+        if (-not (Test-Path -LiteralPath $recyclarrConfigs)) {
+            New-Item -ItemType Directory -Force -Path $recyclarrConfigs | Out-Null
+        }
+
+        # Generate v8-format starter configs via Recyclarr itself, so the
+        # format always matches the installed version.
+        $rcRootDocker = $recyclarrRoot -replace '\\','/'
+        foreach ($template in @("web-1080p", "hd-bluray-web")) {
+            $cfgFile = Join-Path $recyclarrConfigs "$template.yml"
+            if (-not (Test-Path -LiteralPath $cfgFile)) {
+                Write-Step "  Generating starter config for '$template'"
+                docker run --rm `
+                    -v "${rcRootDocker}:/config" `
+                    ghcr.io/recyclarr/recyclarr:latest `
+                    config create --template $template *>$null
+                if ($LASTEXITCODE -ne 0) {
+                    Write-WarnMsg "    template '$template' not generated"
+                }
+            }
+        }
+
+        # Patch base_url and api_key in every generated config.
+        Get-ChildItem -LiteralPath $recyclarrConfigs -Filter *.yml | ForEach-Object {
+            $lines = Get-Content -LiteralPath $_.FullName
+            $current = $null
+            $out = New-Object System.Collections.Generic.List[string]
+            foreach ($line in $lines) {
+                $stripped = $line.TrimStart()
+                if     ($stripped -match '^sonarr:\s*$') { $current = 'sonarr' }
+                elseif ($stripped -match '^radarr:\s*$') { $current = 'radarr' }
+                if ($line -match '^(\s*)base_url:\s*') {
+                    $indent = $matches[1]
+                    $url = if ($current -eq 'sonarr') { 'http://sonarr:8989' } elseif ($current -eq 'radarr') { 'http://radarr:7878' } else { $null }
+                    if ($url) { $out.Add("${indent}base_url: $url"); continue }
+                }
+                if ($line -match '^(\s*)api_key:\s*') {
+                    $indent = $matches[1]
+                    $key = if ($current -eq 'sonarr') { $sonarrKey } elseif ($current -eq 'radarr') { $radarrKey } else { $null }
+                    if ($key) { $out.Add("${indent}api_key: $key"); continue }
+                }
+                $out.Add($line)
+            }
+            [System.IO.File]::WriteAllLines($_.FullName, $out)
+            Write-OK "  Patched $($_.Name)"
+        }
+
+        Write-Step "Starting Recyclarr (first sync immediately, then daily at 04:00)"
+        $rcArgs = @("compose", "-f", "docker-compose.yml")
+        if ($Vpn)      { $rcArgs += @("-f", "docker-compose.vpn.yml") }
+        if ($Telegram) { $rcArgs += @("-f", "docker-compose.telegram.yml") }
+        $rcArgs += @("-f", "docker-compose.recyclarr.yml", "up", "-d", "recyclarr")
+        & docker @rcArgs
+
+        Write-Step "Running initial TRaSH-Guides sync (this can take ~30 s)"
+        docker exec recyclarr recyclarr sync 2>&1 | Select-Object -Last 20 | ForEach-Object { Write-Host "    $_" }
+        if ($LASTEXITCODE -eq 0) {
+            Write-OK "Initial sync complete. Check Sonarr -> Settings -> Profiles."
+        } else {
+            Write-WarnMsg "Initial sync exited non-zero. See 'docker logs recyclarr'."
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
 # 8. Summary
 # -----------------------------------------------------------------------------
 Write-Host ""
@@ -476,6 +557,14 @@ if ($Telegram) {
     Write-Host "  2. Send:   /start <password shown above>"
     Write-Host "  3. Try:    /movie inception   or   /series severance"
     Write-Host "  Logs:      docker logs searcharr"
+}
+if ($Recyclarr) {
+    Write-Host ""
+    Write-Host "Recyclarr is active. TRaSH-Guides quality profiles applied to Sonarr and Radarr." -ForegroundColor Yellow
+    Write-Host "  Re-sync schedule: daily at 04:00"
+    Write-Host "  Force sync now:   docker exec recyclarr recyclarr sync"
+    Write-Host "  Edit configs:     $ConfigRoot\recyclarr\configs\"
+    Write-Host "  Logs:             docker logs recyclarr"
 }
 Write-Host ""
 Write-Host "Next steps: see README.md, section 'Wire the services together'." -ForegroundColor Magenta

@@ -791,6 +791,70 @@ Should print a NordVPN IP in your chosen country, **not** your home IP.
 
 ---
 
+## TRaSH-Guides quality profiles (optional, via Recyclarr)
+
+The Sonarr/Radarr defaults will happily grab the first 720p that matches
+an indexer query. If you want **good** results — a proper 1080p WEB-DL
+from a reputable release group, falling back gracefully, skipping known-
+bad encoders — there's a community-maintained set of rules called the
+**[TRaSH Guides](https://trash-guides.info/)**. Applying them by hand is
+tedious; **[Recyclarr](https://recyclarr.dev/)** automates the whole
+thing.
+
+This repo ships an optional override that:
+- Runs Recyclarr on a schedule (default: daily at 04:00).
+- Pre-generates two configs using Recyclarr's own templates: `web-1080p`
+  for Sonarr and `hd-bluray-web` for Radarr — sensible defaults for
+  most people. Easy to swap if you want 4K/anime/etc.
+- Auto-fills your Sonarr and Radarr URLs and API keys, so there's
+  literally nothing to configure by hand on first run.
+
+### Start it
+
+```powershell
+.\setup.ps1 -Recyclarr               # Recyclarr alone
+.\setup.ps1 -Vpn -Telegram -Recyclarr   # everything together
+```
+
+On Linux/macOS: `./setup.sh --recyclarr` (compose-able with `--vpn`
+and `--telegram`).
+
+The script:
+1. Generates `config/recyclarr/configs/web-1080p.yml` and
+   `config/recyclarr/configs/hd-bluray-web.yml` from Recyclarr's
+   built-in `config create --template`.
+2. Patches in your real Sonarr/Radarr URLs and API keys (and only
+   those two fields — your other edits in those files are preserved
+   on re-runs).
+3. Starts the container and runs an immediate first sync so you see
+   results in seconds instead of waiting for the cron.
+
+### What changes inside Sonarr/Radarr
+
+After the first sync, open Sonarr → Settings → Profiles. You'll see
+new entries:
+- **WEB-1080p** in Sonarr (with ~38 custom formats scoring releases
+  by quality, release group, etc.)
+- **HD Bluray + WEB** in Radarr (similar).
+
+Apply these to your shows/movies (right-click → Edit → set Quality
+Profile) and Sonarr/Radarr will start preferring the better releases
+on their next search.
+
+### Customizing
+
+Open `config/recyclarr/configs/*.yml` on the host. The files are heavily
+commented — uncomment groups under `custom_format_groups:` to enable
+extras (HDR scoring, audio preference, optional group), or change the
+quality_profiles list. Re-run `docker exec recyclarr recyclarr sync` to
+apply, or wait for the next 04:00 cron.
+
+To switch to 4K: replace `web-1080p` with `web-2160p` and
+`hd-bluray-web` with `uhd-bluray-web` (template names from
+`docker exec recyclarr recyclarr config list templates`).
+
+---
+
 ## Telegram requests
 
 Want to add movies and TV shows from your phone without opening Overseerr?

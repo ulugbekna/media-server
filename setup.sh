@@ -9,14 +9,17 @@ set -euo pipefail
 
 USE_VPN=0
 USE_TELEGRAM=0
+USE_RECYCLARR=0
 for arg in "$@"; do
     case "$arg" in
         --vpn) USE_VPN=1 ;;
         --telegram) USE_TELEGRAM=1 ;;
+        --recyclarr) USE_RECYCLARR=1 ;;
         -h|--help)
-            echo "Usage: $0 [--vpn] [--telegram]"
-            echo "  --vpn       Route qBittorrent through Gluetun (fill VPN_* in .env first)"
-            echo "  --telegram  Run Searcharr (fill TELEGRAM_BOT_TOKEN in .env first)"
+            echo "Usage: $0 [--vpn] [--telegram] [--recyclarr]"
+            echo "  --vpn        Route qBittorrent through Gluetun (fill VPN_* in .env first)"
+            echo "  --telegram   Run Searcharr (fill TELEGRAM_BOT_TOKEN in .env first)"
+            echo "  --recyclarr  Apply TRaSH-Guides quality profiles to Sonarr/Radarr"
             exit 0 ;;
     esac
 done
@@ -54,6 +57,7 @@ mkdir -p "$MEDIA_ROOT"/{movies,tv}
 mkdir -p "$DOWNLOADS_ROOT"/{complete,incomplete}
 mkdir -p "$CONFIG_ROOT"/{prowlarr,qbittorrent,sonarr,radarr,bazarr,overseerr}
 mkdir -p "$CONFIG_ROOT"/searcharr/{data,logs}
+mkdir -p "$CONFIG_ROOT"/recyclarr
 
 green "Media:     $MEDIA_ROOT"
 green "Downloads: $DOWNLOADS_ROOT"
@@ -197,8 +201,9 @@ fi
 cyan "Pulling images"
 # Heads-up before a potentially slow 10-min download:
 pull_extras=""
-[ "$USE_VPN" = "1" ]      && pull_extras="$pull_extras + Gluetun"
-[ "$USE_TELEGRAM" = "1" ] && pull_extras="$pull_extras + Searcharr"
+[ "$USE_VPN" = "1" ]       && pull_extras="$pull_extras + Gluetun"
+[ "$USE_TELEGRAM" = "1" ]  && pull_extras="$pull_extras + Searcharr"
+[ "$USE_RECYCLARR" = "1" ] && pull_extras="$pull_extras + Recyclarr"
 yellow "Initial pull is ~4 GB (Prowlarr + qBit + Sonarr + Radarr + Bazarr + Overseerr${pull_extras})."
 yellow "On a typical 50 Mbps connection this takes 10-15 minutes."
 yellow "Subsequent re-runs only pull what's changed (usually nothing)."
@@ -278,6 +283,78 @@ if [ "$USE_TELEGRAM" = "1" ]; then
     fi
 fi
 
+# 6c. Recyclarr — generate config and start container -----------------------
+if [ "$USE_RECYCLARR" = "1" ]; then
+    cyan "Configuring Recyclarr"
+    if [ -z "$sonarr_key" ] || [ -z "$radarr_key" ]; then
+        red "Cannot configure Recyclarr: Sonarr/Radarr API keys not found yet."
+        echo "    Give the services another minute to initialise, then re-run with --recyclarr."
+    else
+        recyclarr_root="$CONFIG_ROOT/recyclarr"
+        mkdir -p "$recyclarr_root/configs"
+
+        # Generate the v8-format starter configs via Recyclarr itself, so the
+        # format is always whatever the installed version expects (no
+        # external template to maintain or chase upstream changes for).
+        # Recyclarr v8 reads every .yml in configs/ automatically.
+        for template in web-1080p hd-bluray-web; do
+            if [ ! -f "$recyclarr_root/configs/${template}.yml" ]; then
+                cyan "  Generating starter config for '${template}'"
+                docker run --rm \
+                    --user "$(id -u):$(id -g)" \
+                    -v "$recyclarr_root":/config \
+                    ghcr.io/recyclarr/recyclarr:latest \
+                    config create --template "$template" >/dev/null 2>&1 || \
+                    yellow "    template '${template}' not generated; check 'recyclarr config list templates'"
+            fi
+        done
+
+        # Patch base_url and api_key. Re-runs are safe: only these two fields
+        # are touched; user edits everywhere else are preserved.
+        for cfg in "$recyclarr_root"/configs/*.yml; do
+            [ -f "$cfg" ] || continue
+            python3 - "$cfg" "$sonarr_key" "$radarr_key" <<'PY'
+import re, sys
+path, sk, rk = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as fh: content = fh.read()
+out, current = [], None
+for line in content.splitlines(True):
+    stripped = line.lstrip()
+    if   re.match(r'sonarr:\s*$', stripped): current = 'sonarr'
+    elif re.match(r'radarr:\s*$', stripped): current = 'radarr'
+    if re.match(r'\s*base_url:\s*', line):
+        url = 'http://sonarr:8989' if current == 'sonarr' else ('http://radarr:7878' if current == 'radarr' else None)
+        if url:
+            indent = line[:len(line) - len(line.lstrip())]
+            out.append(f"{indent}base_url: {url}\n"); continue
+    if re.match(r'\s*api_key:\s*', line):
+        key = sk if current == 'sonarr' else (rk if current == 'radarr' else None)
+        if key:
+            indent = line[:len(line) - len(line.lstrip())]
+            out.append(f"{indent}api_key: {key}\n"); continue
+    out.append(line)
+with open(path, 'w') as fh: fh.write(''.join(out))
+PY
+            chmod 600 "$cfg"
+            green "  Patched $(basename "$cfg")"
+        done
+
+        cyan "Starting Recyclarr (will run a first sync immediately, then daily at 04:00)"
+        compose_args="-f docker-compose.yml"
+        [ "$USE_VPN" = "1" ]      && compose_args="$compose_args -f docker-compose.vpn.yml"
+        [ "$USE_TELEGRAM" = "1" ] && compose_args="$compose_args -f docker-compose.telegram.yml"
+        compose_args="$compose_args -f docker-compose.recyclarr.yml"
+        docker compose $compose_args up -d recyclarr
+
+        cyan "Running initial TRaSH-Guides sync (this can take ~30 s)"
+        if docker exec recyclarr recyclarr sync 2>&1 | tail -20 | sed 's/^/    /'; then
+            green "Initial sync complete. Check Sonarr → Settings → Profiles and Radarr → Settings → Profiles."
+        else
+            yellow "Initial sync exited non-zero. Check 'docker logs recyclarr' for details."
+        fi
+    fi
+fi
+
 # 7. Summary -----------------------------------------------------------------
 yellow "⚠  API keys and passwords follow. Copy them to a password manager, then"
 yellow "   clear your terminal history:  history -c  (bash) or  Clear-History  (PowerShell)."
@@ -343,5 +420,14 @@ if [ "$USE_TELEGRAM" = "1" ]; then
     echo   "    2. Send: /start <password shown above>"
     echo   "    3. Then try: /movie inception   or   /series severance"
     echo   "    Logs: docker logs searcharr"
+    echo   ""
+fi
+
+if [ "$USE_RECYCLARR" = "1" ]; then
+    yellow "Recyclarr is active. TRaSH-Guides quality profiles applied to Sonarr and Radarr."
+    echo   "    Re-sync schedule:  daily at 04:00"
+    echo   "    Force sync now:    docker exec recyclarr recyclarr sync"
+    echo   "    Edit configs:      $CONFIG_ROOT/recyclarr/configs/"
+    echo   "    Logs:              docker logs recyclarr"
     echo   ""
 fi
