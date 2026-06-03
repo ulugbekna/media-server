@@ -194,8 +194,17 @@ if [ "$USE_TELEGRAM" = "1" ]; then
     # Searcharr is brought up *after* settings.py is generated below.
 fi
 
-cyan "Pulling images (first run can take a few minutes)"
-"${COMPOSE[@]}" pull
+cyan "Pulling images"
+# Heads-up before a potentially slow 10-min download:
+pull_extras=""
+[ "$USE_VPN" = "1" ]      && pull_extras="$pull_extras + Gluetun"
+[ "$USE_TELEGRAM" = "1" ] && pull_extras="$pull_extras + Searcharr"
+yellow "Initial pull is ~4 GB (Prowlarr + qBit + Sonarr + Radarr + Bazarr + Overseerr${pull_extras})."
+yellow "On a typical 50 Mbps connection this takes 10-15 minutes."
+yellow "Subsequent re-runs only pull what's changed (usually nothing)."
+echo ""
+# --quiet hides the per-layer progress that scrolls past too fast to read.
+"${COMPOSE[@]}" pull --quiet
 cyan "Starting containers"
 "${COMPOSE[@]}" up -d
 

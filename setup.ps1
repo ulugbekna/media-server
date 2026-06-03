@@ -288,8 +288,16 @@ if ($Telegram) {
 # -----------------------------------------------------------------------------
 # 5. Start the stack
 # -----------------------------------------------------------------------------
-Write-Step "Pulling images (first run can take a few minutes)"
-& docker @composeArgs pull
+Write-Step "Pulling images"
+$pullExtras = @()
+if ($Vpn)      { $pullExtras += "Gluetun" }
+if ($Telegram) { $pullExtras += "Searcharr" }
+$extraText = if ($pullExtras.Count -gt 0) { " + " + ($pullExtras -join " + ") } else { "" }
+Write-WarnMsg "Initial pull is ~4 GB (Prowlarr + qBit + Sonarr + Radarr + Bazarr + Overseerr$extraText)."
+Write-WarnMsg "On a typical 50 Mbps connection this takes 10-15 minutes."
+Write-WarnMsg "Subsequent re-runs only pull what's changed (usually nothing)."
+Write-Host ""
+& docker @composeArgs pull --quiet
 if ($LASTEXITCODE -ne 0) { Write-ErrMsg "docker compose pull failed."; exit 1 }
 
 Write-Step "Starting containers"
