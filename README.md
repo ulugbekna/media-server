@@ -319,6 +319,149 @@ options:
 
 ---
 
+## Remote management (SSH)
+
+> **You'll need this.** The security hardening binds Sonarr, Radarr, Jackett
+> and qBittorrent to `127.0.0.1` on the mini-PC — they're not reachable from
+> other LAN devices by design. If the mini-PC lives in a closet, this section
+> is how you reach those UIs from your Mac/laptop.
+
+The idea: **SSH into the mini-PC and tunnel each web UI back to your local
+machine**, so opening `http://localhost:8989` on your Mac actually hits
+Sonarr on the mini-PC, end-to-end encrypted, with no exposed ports.
+
+### 1. Enable the built-in OpenSSH server on Windows
+
+PowerShell **as administrator**, on the mini-PC:
+
+```powershell
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Start-Service sshd
+Set-Service -Name sshd -StartupType Automatic
+
+# (Optional but recommended) make PowerShell the default login shell
+New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell `
+  -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+  -PropertyType String -Force | Out-Null
+
+# Verify
+Get-Service sshd
+```
+
+Find the mini-PC's LAN IP (`ipconfig` → look for IPv4 under your active
+adapter). Then **pin a static DHCP lease** for that MAC address in your
+router so the IP doesn't drift — most routers have this under
+"DHCP reservations" or "Address reservation".
+
+### 2. Key-based login (one-time, from your Mac)
+
+```fish
+# If you don't already have one:
+ssh-keygen -t ed25519
+
+# Copy your public key to the mini-PC so you don't need a password each time:
+ssh-copy-id youruser@192.168.1.42
+# If your Mac doesn't have ssh-copy-id (rare), this works too:
+#   cat ~/.ssh/id_ed25519.pub | ssh youruser@192.168.1.42 \
+#     "powershell -c \"Add-Content -Path $HOME\.ssh\authorized_keys -Value (\$input | Out-String)\""
+
+# Confirm:
+ssh youruser@192.168.1.42 "hostname"
+```
+
+### 3. Tunnel every web UI in one command
+
+```fish
+ssh -L 8989:localhost:8989 \
+    -L 7878:localhost:7878 \
+    -L 9117:localhost:9117 \
+    -L 8080:localhost:8080 \
+    -L 5055:localhost:5055 \
+    -L 8000:localhost:8000 \
+    youruser@192.168.1.42
+```
+
+While that SSH session stays open, on your Mac:
+
+| Open in your browser  | Hits service on mini-PC   |
+| --------------------- | ------------------------- |
+| http://localhost:8989 | Sonarr                    |
+| http://localhost:7878 | Radarr                    |
+| http://localhost:9117 | Jackett                   |
+| http://localhost:8080 | qBittorrent               |
+| http://localhost:5055 | Overseerr (also LAN-reachable directly) |
+| http://localhost:8000 | Gluetun control API (VPN only) |
+
+> If you already have a service listening on one of these ports on your Mac
+> (e.g. local development), pick a different left-hand port:
+> `-L 18989:localhost:8989` → browse to `http://localhost:18989`.
+
+### 4. Make it a one-word command: `~/.ssh/config`
+
+Drop this into `~/.ssh/config` on your Mac:
+
+```sshconfig
+Host miniserver
+    HostName 192.168.1.42
+    User youruser
+    # Forward every web UI in the media stack:
+    LocalForward 8989 localhost:8989
+    LocalForward 7878 localhost:7878
+    LocalForward 9117 localhost:9117
+    LocalForward 8080 localhost:8080
+    LocalForward 5055 localhost:5055
+    LocalForward 8000 localhost:8000
+    # Keep the connection healthy on flaky Wi-Fi:
+    ServerAliveInterval 30
+    ServerAliveCountMax 4
+```
+
+Now you just type `ssh miniserver` and every UI is available on your Mac.
+Open the URLs above in your browser; configure Sonarr, add Jackett indexers,
+manage qBittorrent — all over an encrypted tunnel.
+
+### 5. Don't accidentally lock yourself out
+
+- **Disable sleep** on the mini-PC (Control Panel → Power Options → set
+  "Put the computer to sleep" to **Never** on the active plan). Otherwise
+  it'll go unreachable until you walk to the closet to nudge the mouse.
+- **Don't disable the network adapter on lid close / monitor unplug.** Some
+  mini-PCs ship with this enabled — check Device Manager → your network
+  adapter → Properties → Power Management.
+- **Enable auto-login on boot** (Settings → Accounts → Sign-in options →
+  alternatively `netplwiz` and uncheck "Users must enter a user name and
+  password"). Necessary so Docker Desktop starts after a power blip without
+  needing a keyboard plugged in.
+- **Test reboot-and-recover end-to-end** before you put the PC in the
+  closet: reboot it, walk away, and confirm everything comes back up over
+  SSH within ~2 minutes.
+
+### 6. Do not expose SSH (or any of this) to the internet
+
+SSH on port 22 is scanned constantly by botnets. **Do not port-forward 22
+on your router.** LAN-only access is what you want.
+
+If you ever need to manage the mini-PC from outside your home:
+
+- Install **[Tailscale](https://tailscale.com/)** (free for personal use)
+  on both the mini-PC and your Mac. Each machine gets a stable private
+  hostname like `miniserver.tail-abc12.ts.net`. SSH then works identically
+  from anywhere — coffee shop, friend's house, holiday — with no router
+  config and no exposed ports.
+- Replace the `HostName 192.168.1.42` line in `~/.ssh/config` with the
+  Tailscale hostname and you're done.
+
+### 7. When you actually need a graphical desktop
+
+99% of the time SSH + the tunneled web UIs are enough. The exceptions —
+Plex's first-run wizard, Docker Desktop's tray menu, BIOS-level Windows
+updates — need an actual desktop. Use **Microsoft Remote Desktop** (free
+on the Mac App Store) over RDP, again LAN-only. Windows 10/11 Home doesn't
+ship the RDP server; on Home, install TightVNC or RealVNC instead and
+connect with macOS Finder → `⌘K` → `vnc://192.168.1.42`.
+
+---
+
 ## Recommended add-ons
 
 - **VPN** — see [VPN](#vpn) below. Strongly recommended for torrent traffic.
@@ -663,6 +806,7 @@ Telegram**.
 | Docker Desktop hangs at "Starting"             | `wsl --update` in an elevated PowerShell, then restart Docker Desktop.                                |
 | `setup.ps1` blocked by execution policy        | `powershell -ExecutionPolicy Bypass -File .\setup.ps1`                                                |
 | Sonarr/Radarr can't reach Jackett or qBittorrent | Use the **service name** as the hostname (`jackett`, `qbittorrent`), not `localhost` or `127.0.0.1`. |
+| Can't reach Sonarr/Radarr/Jackett/qBittorrent from another LAN device | By design — admin UIs are bound to `127.0.0.1` on the mini-PC. Use the SSH tunnel pattern in [Remote management](#remote-management-ssh). |
 | Jackett: indexer red, error "Cloudflare challenge" | Add the FlareSolverr container (see Jackett section), then in Jackett Settings set FlareSolverr API URL to `http://flaresolverr:8191/`. |
 | Jackett: "No results" but the tracker works in browser | Click the indexer row → **Manual Search** in Jackett to confirm. If it works there but not from Sonarr/Radarr, you probably pasted the wrong Torznab URL or used the host's hostname instead of `jackett`. |
 | Jackett: indexer was working, now red | Public trackers go down or change domains. Click the wrench, check for an updated URL; if there's no fix, disable the indexer and add an alternative. |
