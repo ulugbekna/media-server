@@ -1,0 +1,64 @@
+# =============================================================================
+# Caddy reverse proxy override.
+#
+# Replaces the "tunnel six ports over SSH" workflow with one HTTPS endpoint.
+# Caddy listens on 127.0.0.1:443 on the mini-PC and reverse-proxies to each
+# service by Docker service name. SSH-forward just port 443 from your Mac
+# and browse to https://sonarr.miniserver.local instead of memorising
+# http://localhost:8989 etc.
+#
+# Why "internal" TLS:
+#   - The mini-PC has no public DNS name, no public IP to validate against,
+#     and we don't want to expose ports 80/443 to the internet anyway.
+#   - Caddy's `tls internal` directive provisions a private CA + leaf certs
+#     entirely on-host. Browsers will warn about the cert unless you import
+#     Caddy's root CA into your Mac's keychain (one-time, see README).
+#
+# Bind:
+#   127.0.0.1:443  — only via the SSH tunnel from your Mac, by design.
+#
+# Hostnames (all resolve to 127.0.0.1 inside the SSH tunnel; you add them to
+# your Mac's /etc/hosts in the README setup step):
+#   prowlarr.miniserver.local     -> prowlarr:9696
+#   qbittorrent.miniserver.local  -> qbittorrent:8080 (or gluetun:8080 if VPN)
+#   sonarr.miniserver.local       -> sonarr:8989
+#   radarr.miniserver.local       -> radarr:7878
+#   bazarr.miniserver.local       -> bazarr:6767
+#   overseerr.miniserver.local    -> overseerr:5055
+#
+# Override the base hostname suffix via CADDY_DOMAIN_SUFFIX in .env if
+# 'miniserver.local' clashes with anything on your network.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.proxy.yml up -d
+# Compose-able with any combination of the other overrides.
+# =============================================================================
+
+services:
+  caddy:
+    # tag: caddy:2-alpine
+    image: caddy@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
+    container_name: caddy
+    environment:
+      - TZ=${TZ:-UTC}
+      # The base hostname suffix. All service hostnames are <service>.<suffix>.
+      - CADDY_DOMAIN_SUFFIX=${CADDY_DOMAIN_SUFFIX:-miniserver.local}
+    volumes:
+      - ${CONFIG_ROOT}/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${CONFIG_ROOT}/caddy/data:/data
+      - ${CONFIG_ROOT}/caddy/config:/config
+    ports:
+      # HTTPS only — loopback only — reached via SSH tunnel from your Mac.
+      - "127.0.0.1:443:443"
+    restart: unless-stopped
+    depends_on:
+      sonarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy
+      prowlarr:
+        condition: service_healthy
+      bazarr:
+        condition: service_healthy
+      overseerr:
+        condition: service_healthy

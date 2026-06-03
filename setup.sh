@@ -10,16 +10,19 @@ set -euo pipefail
 USE_VPN=0
 USE_TELEGRAM=0
 USE_RECYCLARR=0
+USE_PROXY=0
 for arg in "$@"; do
     case "$arg" in
         --vpn) USE_VPN=1 ;;
         --telegram) USE_TELEGRAM=1 ;;
         --recyclarr) USE_RECYCLARR=1 ;;
+        --proxy) USE_PROXY=1 ;;
         -h|--help)
-            echo "Usage: $0 [--vpn] [--telegram] [--recyclarr]"
+            echo "Usage: $0 [--vpn] [--telegram] [--recyclarr] [--proxy]"
             echo "  --vpn        Route qBittorrent through Gluetun (fill VPN_* in .env first)"
             echo "  --telegram   Run Searcharr (fill TELEGRAM_BOT_TOKEN in .env first)"
             echo "  --recyclarr  Apply TRaSH-Guides quality profiles to Sonarr/Radarr"
+            echo "  --proxy      Run Caddy as a reverse proxy for all web UIs over HTTPS"
             exit 0 ;;
     esac
 done
@@ -58,6 +61,7 @@ mkdir -p "$DOWNLOADS_ROOT"/{complete,incomplete}
 mkdir -p "$CONFIG_ROOT"/{prowlarr,qbittorrent,sonarr,radarr,bazarr,overseerr}
 mkdir -p "$CONFIG_ROOT"/searcharr/{data,logs}
 mkdir -p "$CONFIG_ROOT"/recyclarr
+mkdir -p "$CONFIG_ROOT"/caddy/{data,config}
 
 green "Media:     $MEDIA_ROOT"
 green "Downloads: $DOWNLOADS_ROOT"
@@ -83,9 +87,11 @@ green "Disk:      ${DISK_FREE_GB} GB free"
 # Detect anything already listening on a port we're about to publish.
 check_port() {
     local port="$1" service="$2"
-    if command -v lsof >/dev/null 2>&1 && lsof -i ":$port" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
+    # -iTCP:<port> + -sTCP:LISTEN restricts to TCP listeners only (LSOF will
+    # otherwise list UDP traffic matching the port, e.g. MS Teams on 443).
+    if command -v lsof >/dev/null 2>&1 && lsof -iTCP:"$port" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
         red "Port $port (needed for $service) is already in use:"
-        lsof -i ":$port" -sTCP:LISTEN -n -P | tail -n +1 | head -3 | sed 's/^/        /'
+        lsof -iTCP:"$port" -sTCP:LISTEN -n -P | tail -n +1 | head -3 | sed 's/^/        /'
         return 1
     fi
     return 0
@@ -99,6 +105,9 @@ check_port 7878 "Radarr"      || PORT_CONFLICT=1
 check_port 6767 "Bazarr"      || PORT_CONFLICT=1
 check_port 5055 "Overseerr"   || PORT_CONFLICT=1
 check_port 6881 "qBittorrent (BitTorrent)" || PORT_CONFLICT=1
+if [ "$USE_PROXY" = "1" ]; then
+    check_port 443 "Caddy (reverse proxy HTTPS)" || PORT_CONFLICT=1
+fi
 if [ "$PORT_CONFLICT" = "1" ]; then
     red "Port conflict(s) detected. Stop the conflicting process or change the host"
     red "port in docker-compose.yml, then re-run."
@@ -204,6 +213,7 @@ pull_extras=""
 [ "$USE_VPN" = "1" ]       && pull_extras="$pull_extras + Gluetun"
 [ "$USE_TELEGRAM" = "1" ]  && pull_extras="$pull_extras + Searcharr"
 [ "$USE_RECYCLARR" = "1" ] && pull_extras="$pull_extras + Recyclarr"
+[ "$USE_PROXY" = "1" ]     && pull_extras="$pull_extras + Caddy"
 yellow "Initial pull is ~4 GB (Prowlarr + qBit + Sonarr + Radarr + Bazarr + Overseerr${pull_extras})."
 yellow "On a typical 50 Mbps connection this takes 10-15 minutes."
 yellow "Subsequent re-runs only pull what's changed (usually nothing)."
@@ -355,7 +365,48 @@ PY
     fi
 fi
 
-# 7. Summary -----------------------------------------------------------------
+# 6d. Caddy reverse proxy — copy Caddyfile and start container --------------
+if [ "$USE_PROXY" = "1" ]; then
+    cyan "Configuring Caddy reverse proxy"
+    caddy_file="$CONFIG_ROOT/caddy/Caddyfile"
+    if [ ! -f "$caddy_file" ]; then
+        cp caddy/Caddyfile.template "$caddy_file"
+        green "Copied Caddyfile template to $caddy_file"
+    else
+        yellow "Caddyfile already exists — preserving your edits."
+    fi
+    # Adjust qBittorrent upstream if VPN is enabled (qBit lives in gluetun ns).
+    if [ "$USE_VPN" = "1" ] && grep -q '^  reverse_proxy qbittorrent:8080' "$caddy_file"; then
+        python3 -c "
+import re
+p='$caddy_file'
+with open(p) as f: c=f.read()
+c=c.replace('reverse_proxy qbittorrent:8080', 'reverse_proxy gluetun:8080')
+with open(p,'w') as f: f.write(c)
+"
+        green "VPN mode: pointed qBittorrent reverse_proxy at gluetun:8080"
+    fi
+
+    cyan "Starting Caddy"
+    proxy_args="-f docker-compose.yml"
+    [ "$USE_VPN" = "1" ]       && proxy_args="$proxy_args -f docker-compose.vpn.yml"
+    [ "$USE_TELEGRAM" = "1" ]  && proxy_args="$proxy_args -f docker-compose.telegram.yml"
+    [ "$USE_RECYCLARR" = "1" ] && proxy_args="$proxy_args -f docker-compose.recyclarr.yml"
+    proxy_args="$proxy_args -f docker-compose.proxy.yml"
+    docker compose $proxy_args up -d caddy
+
+    # Give Caddy a moment to provision its internal CA.
+    sleep 4
+    cyan "Caddy is up. Internal root CA cert (import into Mac keychain to silence browser warnings):"
+    cert_path_in_container="/data/caddy/pki/authorities/local/root.crt"
+    if docker exec caddy test -f "$cert_path_in_container"; then
+        green "    docker cp caddy:$cert_path_in_container ./caddy-root.crt"
+        green "    On your Mac:"
+        green "      sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain caddy-root.crt"
+    else
+        yellow "Caddy's root cert not generated yet — give it another 30 s then check ${cert_path_in_container#/}."
+    fi
+fi
 yellow "⚠  API keys and passwords follow. Copy them to a password manager, then"
 yellow "   clear your terminal history:  history -c  (bash) or  Clear-History  (PowerShell)."
 yellow "   Do not share this terminal output."
@@ -429,5 +480,25 @@ if [ "$USE_RECYCLARR" = "1" ]; then
     echo   "    Force sync now:    docker exec recyclarr recyclarr sync"
     echo   "    Edit configs:      $CONFIG_ROOT/recyclarr/configs/"
     echo   "    Logs:              docker logs recyclarr"
+    echo   ""
+fi
+
+if [ "$USE_PROXY" = "1" ]; then
+    suffix="${CADDY_DOMAIN_SUFFIX:-miniserver.local}"
+    yellow "Caddy reverse proxy is active. Friendly HTTPS hostnames:"
+    echo   "    https://sonarr.$suffix     -> Sonarr"
+    echo   "    https://radarr.$suffix     -> Radarr"
+    echo   "    https://prowlarr.$suffix   -> Prowlarr"
+    echo   "    https://qbittorrent.$suffix -> qBittorrent"
+    echo   "    https://bazarr.$suffix     -> Bazarr"
+    echo   "    https://overseerr.$suffix  -> Overseerr"
+    echo   ""
+    echo   "    Setup steps on your Mac (one-time):"
+    echo   "      1. Add the hostnames to /etc/hosts so they resolve to 127.0.0.1:"
+    echo   "         sudo sh -c 'printf \"127.0.0.1 %s.$suffix\\n\" sonarr radarr prowlarr qbittorrent bazarr overseerr >> /etc/hosts'"
+    echo   "      2. SSH-tunnel port 443 from your Mac:  ssh -L 443:localhost:443 miniserver"
+    echo   "      3. Import Caddy's root CA so the browser stops warning:"
+    echo   "         docker cp caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-root.crt"
+    echo   "         (then copy caddy-root.crt to your Mac and add-trusted-cert it — see README)"
     echo   ""
 fi

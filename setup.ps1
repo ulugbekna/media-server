@@ -34,6 +34,11 @@
     Apply the TRaSH-Guides quality profiles, custom formats, and naming
     schemes to Sonarr and Radarr. Runs immediately and then daily at 04:00.
 
+.PARAMETER Proxy
+    Run a Caddy reverse proxy in front of every web UI. Lets you reach the
+    services as https://sonarr.miniserver.local etc. over a single SSH
+    tunnel (port 443) instead of memorising six port numbers.
+
 .EXAMPLE
     .\setup.ps1
     Uses default paths under the current directory.
@@ -46,8 +51,8 @@
     Same as above but routes qBittorrent through the VPN.
 
 .EXAMPLE
-    .\setup.ps1 -Vpn -Telegram -Recyclarr
-    Everything: VPN + Telegram requests + TRaSH-Guides profiles.
+    .\setup.ps1 -Vpn -Telegram -Recyclarr -Proxy
+    Full kit: VPN, Telegram, TRaSH profiles, HTTPS reverse proxy.
 #>
 
 [CmdletBinding()]
@@ -58,7 +63,8 @@ param(
     [string]$Timezone,
     [switch]$Vpn,
     [switch]$Telegram,
-    [switch]$Recyclarr
+    [switch]$Recyclarr,
+    [switch]$Proxy
 )
 
 $ErrorActionPreference = "Stop"
@@ -136,7 +142,9 @@ $folders = @(
     "$ConfigRoot\overseerr",
     "$ConfigRoot\searcharr\data",
     "$ConfigRoot\searcharr\logs",
-    "$ConfigRoot\recyclarr"
+    "$ConfigRoot\recyclarr",
+    "$ConfigRoot\caddy\data",
+    "$ConfigRoot\caddy\config"
 )
 foreach ($f in $folders) {
     if (-not (Test-Path -LiteralPath $f)) {
@@ -171,6 +179,9 @@ $portsToCheck = @(
     @{ port = 5055; service = "Overseerr" },
     @{ port = 6881; service = "qBittorrent (BitTorrent)" }
 )
+if ($Proxy) {
+    $portsToCheck += @{ port = 443; service = "Caddy (reverse proxy HTTPS)" }
+}
 foreach ($p in $portsToCheck) {
     $listener = Get-NetTCPConnection -LocalPort $p.port -State Listen -ErrorAction SilentlyContinue
     if ($listener) {
@@ -299,6 +310,7 @@ $pullExtras = @()
 if ($Vpn)       { $pullExtras += "Gluetun" }
 if ($Telegram)  { $pullExtras += "Searcharr" }
 if ($Recyclarr) { $pullExtras += "Recyclarr" }
+if ($Proxy)     { $pullExtras += "Caddy" }
 $extraText = if ($pullExtras.Count -gt 0) { " + " + ($pullExtras -join " + ") } else { "" }
 Write-WarnMsg "Initial pull is ~4 GB (Prowlarr + qBit + Sonarr + Radarr + Bazarr + Overseerr$extraText)."
 Write-WarnMsg "On a typical 50 Mbps connection this takes 10-15 minutes."
@@ -497,6 +509,49 @@ if ($Recyclarr) {
 }
 
 # -----------------------------------------------------------------------------
+# 7d. Caddy reverse proxy — copy Caddyfile and start container
+# -----------------------------------------------------------------------------
+if ($Proxy) {
+    Write-Step "Configuring Caddy reverse proxy"
+    $caddyFile = Join-Path $ConfigRoot "caddy\Caddyfile"
+    if (-not (Test-Path -LiteralPath $caddyFile)) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "caddy\Caddyfile.template") -Destination $caddyFile
+        Write-OK "Copied Caddyfile template to $caddyFile"
+    } else {
+        Write-WarnMsg "Caddyfile already exists — preserving your edits."
+    }
+    # Adjust qBittorrent upstream when VPN is active.
+    if ($Vpn) {
+        $content = Get-Content -LiteralPath $caddyFile -Raw
+        if ($content -match 'reverse_proxy qbittorrent:8080') {
+            $content = $content -replace 'reverse_proxy qbittorrent:8080', 'reverse_proxy gluetun:8080'
+            [System.IO.File]::WriteAllText($caddyFile, $content, [System.Text.UTF8Encoding]::new($false))
+            Write-OK "VPN mode: pointed qBittorrent reverse_proxy at gluetun:8080"
+        }
+    }
+
+    Write-Step "Starting Caddy"
+    $proxyArgs = @("compose", "-f", "docker-compose.yml")
+    if ($Vpn)       { $proxyArgs += @("-f", "docker-compose.vpn.yml") }
+    if ($Telegram)  { $proxyArgs += @("-f", "docker-compose.telegram.yml") }
+    if ($Recyclarr) { $proxyArgs += @("-f", "docker-compose.recyclarr.yml") }
+    $proxyArgs += @("-f", "docker-compose.proxy.yml", "up", "-d", "caddy")
+    & docker @proxyArgs
+
+    Start-Sleep -Seconds 4
+    Write-Step "Caddy is up. Internal root CA cert (import into your Mac keychain to silence browser warnings):"
+    $certPath = "/data/caddy/pki/authorities/local/root.crt"
+    docker exec caddy test -f $certPath 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-OK "    docker cp caddy:$certPath ./caddy-root.crt"
+        Write-OK "    On your Mac:"
+        Write-OK "      sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain caddy-root.crt"
+    } else {
+        Write-WarnMsg "Caddy's root cert not generated yet — give it another 30 s then check $($certPath.Substring(1))."
+    }
+}
+
+# -----------------------------------------------------------------------------
 # 8. Summary
 # -----------------------------------------------------------------------------
 Write-Host ""
@@ -565,6 +620,23 @@ if ($Recyclarr) {
     Write-Host "  Force sync now:   docker exec recyclarr recyclarr sync"
     Write-Host "  Edit configs:     $ConfigRoot\recyclarr\configs\"
     Write-Host "  Logs:             docker logs recyclarr"
+}
+if ($Proxy) {
+    $suffix = if ($env:CADDY_DOMAIN_SUFFIX) { $env:CADDY_DOMAIN_SUFFIX } else { 'miniserver.local' }
+    Write-Host ""
+    Write-Host "Caddy reverse proxy is active. Friendly HTTPS hostnames:" -ForegroundColor Yellow
+    Write-Host "  https://sonarr.$suffix     -> Sonarr"
+    Write-Host "  https://radarr.$suffix     -> Radarr"
+    Write-Host "  https://prowlarr.$suffix   -> Prowlarr"
+    Write-Host "  https://qbittorrent.$suffix -> qBittorrent"
+    Write-Host "  https://bazarr.$suffix     -> Bazarr"
+    Write-Host "  https://overseerr.$suffix  -> Overseerr"
+    Write-Host ""
+    Write-Host "  Setup steps on your Mac (one-time):"
+    Write-Host "    1. Add the hostnames to /etc/hosts so they resolve to 127.0.0.1."
+    Write-Host "    2. SSH-tunnel port 443 from your Mac: ssh -L 443:localhost:443 miniserver"
+    Write-Host "    3. Import Caddy's root CA so the browser stops warning."
+    Write-Host "    See README 'Reverse proxy (Caddy)' for the exact commands."
 }
 Write-Host ""
 Write-Host "Next steps: see README.md, section 'Wire the services together'." -ForegroundColor Magenta

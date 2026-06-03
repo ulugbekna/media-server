@@ -468,12 +468,26 @@ options:
 
 ---
 
+### Reverse proxy (Caddy) — friendly HTTPS hostnames
+
+Six SSH `-L` flags is fine; one `-L` plus URLs that read like
+`https://sonarr.miniserver.local` is nicer. **See the [Reverse proxy
+(Caddy)](#reverse-proxy-caddy--friendly-https-hostnames) section below**
+for the optional Caddy override that adds HTTPS hostnames over a single
+SSH tunnel.
+
+---
+
 ## Remote management (SSH)
 
 > **You'll need this.** The security hardening binds Sonarr, Radarr, Prowlarr
 > and qBittorrent to `127.0.0.1` on the mini-PC — they're not reachable from
 > other LAN devices by design. If the mini-PC lives in a closet, this section
 > is how you reach those UIs from your Mac/laptop.
+>
+> **If you've enabled the Caddy reverse proxy** (above), forward just port
+> `443` from your Mac and use the friendly HTTPS hostnames instead of
+> the six-port pattern below.
 
 The idea: **SSH into the mini-PC and tunnel each web UI back to your local
 machine**, so opening `http://localhost:8989` on your Mac actually hits
@@ -611,6 +625,122 @@ updates — need an actual desktop. Use **Microsoft Remote Desktop** (free
 on the Mac App Store) over RDP, again LAN-only. Windows 10/11 Home doesn't
 ship the RDP server; on Home, install TightVNC or RealVNC instead and
 connect with macOS Finder → `⌘K` → `vnc://192.168.1.42`.
+
+---
+
+## Reverse proxy (Caddy) — friendly HTTPS hostnames
+
+Six SSH `-L` flags work, but one `-L` plus URLs like
+`https://sonarr.miniserver.local` are nicer. This repo ships an optional
+Caddy reverse proxy override that:
+
+- Listens on `127.0.0.1:443` (TLS, loopback only — same security model
+  as everything else).
+- Uses Caddy's `tls internal` directive to mint its own certs from a
+  local CA. No real domain, no Let's Encrypt, no exposed ports.
+- Routes by hostname:
+
+  | Hostname                              | Service     |
+  | ------------------------------------- | ----------- |
+  | `sonarr.miniserver.local`             | Sonarr      |
+  | `radarr.miniserver.local`             | Radarr      |
+  | `prowlarr.miniserver.local`           | Prowlarr    |
+  | `qbittorrent.miniserver.local`        | qBittorrent |
+  | `bazarr.miniserver.local`             | Bazarr      |
+  | `overseerr.miniserver.local`          | Overseerr   |
+
+The suffix is configurable via `CADDY_DOMAIN_SUFFIX` in `.env` (default
+`miniserver.local`).
+
+### Start the proxy
+
+```powershell
+.\setup.ps1 -Proxy                      # proxy only
+.\setup.ps1 -Vpn -Recyclarr -Proxy      # everything together
+```
+
+On Linux/macOS: `./setup.sh --proxy` (compose-able with any other flags).
+
+The script:
+1. Copies `caddy/Caddyfile.template` to `config/caddy/Caddyfile` (only on
+   first run; subsequent runs preserve your edits).
+2. If `--vpn` is active, rewrites the qBittorrent upstream from
+   `qbittorrent:8080` to `gluetun:8080` automatically.
+3. Starts Caddy, which provisions internal certs for all six hostnames
+   (takes ~5 seconds).
+
+### One-time client setup (on your Mac)
+
+After running the proxy override, do these three things on your Mac to
+get the full experience:
+
+**1. Add the hostnames to `/etc/hosts`** so they resolve to localhost
+(where your SSH tunnel terminates):
+
+```fish
+sudo sh -c 'printf "127.0.0.1 %s.miniserver.local\n" sonarr radarr prowlarr qbittorrent bazarr overseerr >> /etc/hosts'
+```
+
+**2. SSH-tunnel just port 443** instead of six ports. Replace the
+`LocalForward` lines from [Remote management](#remote-management-ssh)
+in your `~/.ssh/config` with:
+
+```sshconfig
+Host miniserver
+    HostName 192.168.1.42
+    User youruser
+    LocalForward 443 localhost:443
+    ServerAliveInterval 30
+    ServerAliveCountMax 4
+```
+
+> Forwarding local port 443 needs `sudo ssh miniserver` because 443 is
+> privileged on the Mac side. Alternative: use a non-privileged local
+> port (`LocalForward 8443 localhost:443`) and browse to
+> `https://sonarr.miniserver.local:8443`.
+
+**3. Import Caddy's root CA** so the browser stops warning about the
+self-signed cert:
+
+```fish
+# Pull the cert from the mini-PC over SSH:
+ssh miniserver "docker exec caddy cat /data/caddy/pki/authorities/local/root.crt" > ~/caddy-root.crt
+
+# Add it to the macOS system keychain (asks for your password):
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain ~/caddy-root.crt
+```
+
+Done. Open `https://sonarr.miniserver.local` in any browser, no warnings,
+all six services one click away.
+
+### Trade-offs
+
+- **Pro:** one tunnel forward, friendly URLs, real HTTPS, no
+  port-number memorisation. Easier to bookmark.
+- **Con:** the one-time `/etc/hosts` + root-CA-trust steps. After
+  setup it's invisible; before setup it's three commands.
+- **No new attack surface:** Caddy listens only on `127.0.0.1`, same
+  as the individual services. Anyone on your LAN still can't reach
+  it without SSH access to the mini-PC.
+
+### Adding HTTP basic auth (optional)
+
+If you want a password prompt in front of (e.g.) Sonarr beyond just
+SSH access, edit `config/caddy/Caddyfile`:
+
+```caddy
+sonarr.{$CADDY_DOMAIN_SUFFIX} {
+    tls internal
+    basicauth {
+        admin $2a$14$Hd...hashed-with-caddy-hash-password
+    }
+    reverse_proxy sonarr:8989
+}
+```
+
+Generate the password hash: `docker exec caddy caddy hash-password`.
+Then `docker compose restart caddy`.
 
 ---
 

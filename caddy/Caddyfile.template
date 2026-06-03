@@ -1,0 +1,57 @@
+# =============================================================================
+#  copied to config/caddy/Caddyfile by setup.ps1 / setup.sh onCaddyfile 
+# first run with --proxy.
+#
+# Edit the copy (config/caddy/Caddyfile), then docker compose restart caddy.
+#
+# Re-running the setup script with --proxy preserves user  the fileedits 
+# is only copied if it doesn't already exist.
+# =============================================================================
+
+{
+    # Internal CA: Caddy issues its own certificates from a local root CA.
+    # See https://caddyserver.com/docs/automatic-https#local-https for details.
+    # The root cert ends up at /data/caddy/pki/authorities/local/root.crt
+    # inside the  import it into your Mac's keychain to silencecontainer 
+    # browser warnings (the setup script tells you exactly how).
+    auto_https disable_redirects
+}
+
+# --- Sonarr -----------------------------------------------------------------
+sonarr.{$CADDY_DOMAIN_SUFFIX} {
+    tls internal
+    reverse_proxy sonarr:8989
+}
+
+# --- Radarr -----------------------------------------------------------------
+radarr.{$CADDY_DOMAIN_SUFFIX} {
+    tls internal
+    reverse_proxy radarr:7878
+}
+
+# --- Prowlarr ---------------------------------------------------------------
+prowlarr.{$CADDY_DOMAIN_SUFFIX} {
+    tls internal
+    reverse_proxy prowlarr:9696
+}
+
+# --- qBittorrent ------------------------------------------------------------
+# When the VPN override is active, qBittorrent's web UI lives in the gluetun
+# network namespace and is reachable as gluetun:8080 on the Compose network.
+# Without VPN, it's at qbittorrent:8080. Edit this stanza for your setup.
+qbittorrent.{$CADDY_DOMAIN_SUFFIX} {
+    tls internal
+    reverse_proxy qbittorrent:8080
+}
+
+# --- Bazarr -----------------------------------------------------------------
+bazarr.{$CADDY_DOMAIN_SUFFIX} {
+    tls internal
+    reverse_proxy bazarr:6767
+}
+
+# --- Overseerr --------------------------------------------------------------
+overseerr.{$CADDY_DOMAIN_SUFFIX} {
+    tls internal
+    reverse_proxy overseerr:5055
+}
