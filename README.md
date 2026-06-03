@@ -419,6 +419,43 @@ for f in docker-compose*.yml.bak; do mv "$f" "${f%.bak}"; done
 docker compose up -d
 ```
 
+### Update notifications (optional, via Diun)
+
+The update script above is pull-based — you have to remember to run it.
+For push-based "hey, there's something new" notifications, this repo
+ships an optional **Diun** ([Docker Image Update Notifier](https://crazymax.dev/diun/))
+override. Diun watches every container in the stack and pings you when
+an upstream image has a newer digest than what's pinned. It does **not**
+auto-update; the actual update still goes through `update.sh --apply`
+with its 7-day quarantine.
+
+#### Start Diun
+
+1. Pick a notification channel (the easiest is Telegram if you already
+   set up the Searcharr bot — you can reuse the bot for these messages
+   too, just point it at a different chat).
+2. Fill in the relevant `DIUN_NOTIF_*` block in `.env` (see
+   `.env.example` — Telegram, Discord, and Slack are wired by default).
+3. Start the override:
+   ```powershell
+   docker compose -f docker-compose.yml -f docker-compose.diun.yml up -d
+   ```
+4. Verify it started: `docker logs diun` should show
+   `Cron initialized with schedule 0 0 9 * * *` and the next run time.
+
+Composable with the VPN and Telegram overrides — chain as many `-f` flags
+as you need. With no notification channel configured, Diun still runs
+and logs every detected update to `docker logs diun` — that's a usable
+fallback if you'd rather just `docker logs diun --since 24h` daily.
+
+#### Other notification channels
+
+The env-var interface only covers Telegram, Discord, and Slack
+cleanly — SMTP, Gotify, Matrix, MS Teams, ntfy, etc. have strict
+validation that doesn't play well with empty defaults. For those, drop
+a YAML config file at `config/diun/diun.yml`; Diun picks it up
+automatically. See the [Diun docs](https://crazymax.dev/diun/config/).
+
 ### Backup
 
 The `config/` folder contains everything irreplaceable — API keys, indexer

@@ -1,0 +1,57 @@
+# =============================================================================
+# Diun update-notifier override.
+#
+# Watches every container's pinned image and notifies you when an upstream
+# image with a newer digest is available. Does NOT auto-update — pairs with
+# the update.sh / update.ps1 script which has the 7-day quarantine logic.
+#
+# Notifications via .env variables (Telegram / Discord / Slack — easiest):
+#   - Telegram:  DIUN_NOTIF_TELEGRAM_TOKEN, DIUN_NOTIF_TELEGRAM_CHATIDS
+#   - Discord:   DIUN_NOTIF_DISCORD_WEBHOOKURL
+#   - Slack:     DIUN_NOTIF_SLACK_WEBHOOKURL
+#
+# For other channels (SMTP email, Gotify, MS Teams, Matrix, ntfy, etc.) the
+# env-var interface gets fiddly because of strict validation. The cleanest
+# path is to drop a YAML config file into config/diun/diun.yml — see
+# https://crazymax.dev/diun/config/ for the full schema. Diun loads it
+# automatically when present.
+#
+# Even with no notifications configured, Diun still runs and logs update
+# events to stdout — `docker logs diun` is your fallback channel.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.diun.yml up -d
+# =============================================================================
+
+services:
+  diun:
+    # tag: crazymax/diun:latest
+    image: crazymax/diun@sha256:e324b793eb32dfb7f74d3a39421ebf090141caaadee69b8f78da63112408ee25
+    container_name: diun
+    command: serve
+    volumes:
+      - ${CONFIG_ROOT}/diun:/data
+      # Read-only socket — Diun only inspects, never controls Docker.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - TZ=${TZ:-UTC}
+      - LOG_LEVEL=info
+      # Watch interval cron-style. Default: every day at 09:00.
+      - DIUN_WATCH_SCHEDULE=${DIUN_WATCH_SCHEDULE:-0 0 9 * * *}
+      - DIUN_WATCH_FIRSTCHECKNOTIF=false
+      # Auto-discover every running container (so all services in this stack
+      # are watched without listing them by hand).
+      - DIUN_PROVIDERS_DOCKER=true
+      - DIUN_PROVIDERS_DOCKER_WATCHBYDEFAULT=true
+
+      # --- Telegram notifications (simplest; reuse your @BotFather bot) ---
+      - DIUN_NOTIF_TELEGRAM_TOKEN=${DIUN_NOTIF_TELEGRAM_TOKEN:-}
+      - DIUN_NOTIF_TELEGRAM_CHATIDS=${DIUN_NOTIF_TELEGRAM_CHATIDS:-}
+
+      # --- Discord webhook ---
+      - DIUN_NOTIF_DISCORD_WEBHOOKURL=${DIUN_NOTIF_DISCORD_WEBHOOKURL:-}
+
+      # --- Slack webhook ---
+      - DIUN_NOTIF_SLACK_WEBHOOKURL=${DIUN_NOTIF_SLACK_WEBHOOKURL:-}
+    restart: unless-stopped
+
