@@ -372,6 +372,64 @@ docker compose down            # stop everything (keeps data)
 To uninstall completely: `docker compose down -v` and delete the `config/`,
 `downloads/`, and `media/` folders.
 
+### Update flow (end-to-end)
+
+How keeping the stack up to date works, in order:
+
+```
+       ┌─────────────────────────────────────────────────────────────┐
+       │  Upstream releases a new image (e.g. lscr.io/.../sonarr)    │
+       └─────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+    ┌───────────────────────────────────────────────────────────────────┐
+    │  Diun (optional, runs daily at 09:00 in the stack)                │
+    │   - notices the new digest                                        │
+    │   - sends you a Telegram / Discord / Slack notification           │
+    │     (or just logs it — docker logs diun)                          │
+    └───────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+    ┌───────────────────────────────────────────────────────────────────┐
+    │  YOU run update.sh (or update.ps1) — dry-run first                │
+    │   - pulls each :latest tag                                        │
+    │   - skips anything younger than 7 days (quarantine window)        │
+    │   - reports what *would* change                                   │
+    └───────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+    ┌───────────────────────────────────────────────────────────────────┐
+    │  YOU run update.sh --apply                                        │
+    │   - rewrites the SHA digests in docker-compose*.yml               │
+    │   - keeps a .bak copy of each modified file                       │
+    └───────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+    ┌───────────────────────────────────────────────────────────────────┐
+    │  YOU restart the stack with the new digests                       │
+    │   docker compose pull && docker compose up -d                     │
+    └───────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                  If anything misbehaves, ROLLBACK:
+                  restore the .bak files, docker compose up -d
+```
+
+**Typical cadence:** check (or get pinged) once a week, apply once a month.
+
+**Without Diun:** just run `./update.sh` (dry-run) on whatever schedule you
+like — weekly is plenty. The script is idempotent and only proposes work
+when there's something to do.
+
+**With overrides:** `update.sh` knows about every `docker-compose*.yml` file
+in the repo root, so it handles VPN, Telegram, Recyclarr, Diun, and Caddy
+digests too — no extra flags. After `--apply`, your `docker compose up -d`
+needs the same `-f ...` chain you originally used (the setup script's
+`-Vpn -Telegram -Recyclarr -Proxy` flags assemble that for you).
+
+The individual pieces — the update script and Diun — are documented in
+the next two subsections.
+
 ### Upgrading (with 7-day quarantine)
 
 All images are pinned to specific SHA digests in `docker-compose*.yml`, so
