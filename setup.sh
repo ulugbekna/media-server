@@ -59,6 +59,67 @@ green "Media:     $MEDIA_ROOT"
 green "Downloads: $DOWNLOADS_ROOT"
 green "Config:    $CONFIG_ROOT"
 
+# 2b. Pre-flight checks ------------------------------------------------------
+cyan "Pre-flight checks"
+
+# --- Disk space ---
+# Docker images alone are ~3-4 GB; warn under 20 GB free.
+# `df -k -P` is the only `df` invocation supported by both macOS and Linux.
+DISK_FREE_KB=$(df -k -P "$CONFIG_ROOT" | awk 'NR==2 {print $4}')
+DISK_FREE_GB=$(( DISK_FREE_KB / 1024 / 1024 ))
+if [ "$DISK_FREE_GB" -lt 20 ]; then
+    red "Only ${DISK_FREE_GB} GB free on $(df -P "$CONFIG_ROOT" | awk 'NR==2{print $6}')."
+    red "Need at least 20 GB for images + space for the media library."
+    echo "    Free up space or set CONFIG_ROOT/MEDIA_ROOT/DOWNLOADS_ROOT to a larger drive."
+    exit 1
+fi
+green "Disk:      ${DISK_FREE_GB} GB free"
+
+# --- Port conflicts ---
+# Detect anything already listening on a port we're about to publish.
+check_port() {
+    local port="$1" service="$2"
+    if command -v lsof >/dev/null 2>&1 && lsof -i ":$port" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
+        red "Port $port (needed for $service) is already in use:"
+        lsof -i ":$port" -sTCP:LISTEN -n -P | tail -n +1 | head -3 | sed 's/^/        /'
+        return 1
+    fi
+    return 0
+}
+PORT_CONFLICT=0
+# Each port the base stack publishes on the host:
+check_port 9696 "Prowlarr"    || PORT_CONFLICT=1
+check_port 8080 "qBittorrent" || PORT_CONFLICT=1
+check_port 8989 "Sonarr"      || PORT_CONFLICT=1
+check_port 7878 "Radarr"      || PORT_CONFLICT=1
+check_port 6767 "Bazarr"      || PORT_CONFLICT=1
+check_port 5055 "Overseerr"   || PORT_CONFLICT=1
+check_port 6881 "qBittorrent (BitTorrent)" || PORT_CONFLICT=1
+if [ "$PORT_CONFLICT" = "1" ]; then
+    red "Port conflict(s) detected. Stop the conflicting process or change the host"
+    red "port in docker-compose.yml, then re-run."
+    exit 1
+fi
+green "Ports:     no conflicts"
+
+# --- PUID/PGID sanity ---
+# LSIO images default to 1000:1000. If your shell runs as 0 (root) or a
+# high UID (e.g. corporate-managed Mac), file ownership inside the bind
+# mounts won't match what the container writes — silent permission issues.
+SHELL_UID=$(id -u)
+SHELL_GID=$(id -g)
+if [ "$SHELL_UID" = "0" ]; then
+    yellow "Warning: running as root. Container files will be owned by root on disk."
+    yellow "         Consider running as a regular user with PUID 1000."
+elif [ "$SHELL_UID" -ne 1000 ] || [ "$SHELL_GID" -ne 1000 ]; then
+    yellow "Note: your UID:GID is ${SHELL_UID}:${SHELL_GID} but containers run as 1000:1000."
+    yellow "      Files written by the containers will not be owned by your shell user."
+    yellow "      If you plan to edit/move files manually outside Docker, override:"
+    yellow "        echo 'PUID=${SHELL_UID}' >> .env"
+    yellow "        echo 'PGID=${SHELL_GID}' >> .env"
+fi
+green "User:      UID=${SHELL_UID} GID=${SHELL_GID}"
+
 # 3. .env --------------------------------------------------------------------
 cyan "Writing .env"
 

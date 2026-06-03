@@ -140,6 +140,56 @@ foreach ($f in $folders) {
 }
 
 # -----------------------------------------------------------------------------
+# 3b. Pre-flight checks
+# -----------------------------------------------------------------------------
+Write-Step "Pre-flight checks"
+
+# --- Disk space ---
+$drive = (Get-Item -LiteralPath $ConfigRoot).PSDrive
+$freeGb = [Math]::Floor($drive.Free / 1GB)
+if ($freeGb -lt 20) {
+    Write-ErrMsg "Only $freeGb GB free on drive $($drive.Name):. Need at least 20 GB."
+    Write-Host  "    Free up space or point CONFIG_ROOT/MEDIA_ROOT/DOWNLOADS_ROOT to a larger drive."
+    exit 1
+}
+Write-OK "Disk:      $freeGb GB free on $($drive.Name):"
+
+# --- Port conflicts ---
+$portConflict = $false
+$portsToCheck = @(
+    @{ port = 9696; service = "Prowlarr" },
+    @{ port = 8080; service = "qBittorrent" },
+    @{ port = 8989; service = "Sonarr" },
+    @{ port = 7878; service = "Radarr" },
+    @{ port = 6767; service = "Bazarr" },
+    @{ port = 5055; service = "Overseerr" },
+    @{ port = 6881; service = "qBittorrent (BitTorrent)" }
+)
+foreach ($p in $portsToCheck) {
+    $listener = Get-NetTCPConnection -LocalPort $p.port -State Listen -ErrorAction SilentlyContinue
+    if ($listener) {
+        $owningPid = $listener[0].OwningProcess
+        $proc = (Get-Process -Id $owningPid -ErrorAction SilentlyContinue).ProcessName
+        Write-ErrMsg "Port $($p.port) (needed for $($p.service)) is already in use by $proc (PID $owningPid)."
+        $portConflict = $true
+    }
+}
+if ($portConflict) {
+    Write-ErrMsg "Stop the conflicting process or change the host port in docker-compose.yml,"
+    Write-ErrMsg "then re-run."
+    exit 1
+}
+Write-OK "Ports:     no conflicts"
+
+# --- Sleep / power warning (Windows-specific gotcha) ---
+$sleepTimeoutAC = (powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE 2>$null | Select-String "Current AC Power Setting Index" | ForEach-Object { [Convert]::ToInt32($_.Line.Trim().Split(":")[1].Trim(), 16) })
+if ($sleepTimeoutAC -and $sleepTimeoutAC -ne 0) {
+    Write-WarnMsg "System will sleep after $($sleepTimeoutAC/60) min on AC power."
+    Write-WarnMsg "For a closeted media server, disable sleep:"
+    Write-Host    "    powercfg /change standby-timeout-ac 0"
+}
+
+# -----------------------------------------------------------------------------
 # 4. Generate .env
 # -----------------------------------------------------------------------------
 Write-Step "Writing .env"
