@@ -24,6 +24,7 @@
 
 services:
   gluetun:
+    # tag: qmcgaw/gluetun:latest
     image: qmcgaw/gluetun@sha256:10b4895fde4499c2d1d9fbd8e681d040ede0efe8c6cfe5d0c51daf0461836ee8
     container_name: gluetun
     cap_add:

@@ -25,9 +25,7 @@
 
 services:
   prowlarr:
-    # Pin to a specific digest to prevent unexpected upstream changes.
-    # To upgrade: run `docker pull lscr.io/linuxserver/prowlarr:latest`,
-    # inspect the new digest with `docker inspect`, and update this line.
+    # tag: lscr.io/linuxserver/prowlarr:latest
     image: lscr.io/linuxserver/prowlarr@sha256:2489c6dbaf11e3a6d71aeb2e6980d04193d4af611aa7064a974851222fd41722
     container_name: prowlarr
     environment:
@@ -48,6 +46,7 @@ services:
     restart: unless-stopped
 
   qbittorrent:
+    # tag: lscr.io/linuxserver/qbittorrent:latest
     image: lscr.io/linuxserver/qbittorrent@sha256:715d2bfbcf1cd3d734cbbd4fbd599eb7ea0642eaa079a372dd0d343f59516700
     container_name: qbittorrent
     environment:
@@ -75,6 +74,7 @@ services:
     restart: unless-stopped
 
   sonarr:
+    # tag: lscr.io/linuxserver/sonarr:latest
     image: lscr.io/linuxserver/sonarr@sha256:0b5c4803f92456fb9b65bae8375716ea120b4ea17b3cced7da32b63f0085782b
     container_name: sonarr
     environment:
@@ -101,6 +101,7 @@ services:
         condition: service_healthy
 
   radarr:
+    # tag: lscr.io/linuxserver/radarr:latest
     image: lscr.io/linuxserver/radarr@sha256:c0a4335d4249b46102f64cf6fa27ffc3bddfd9138fac1e4ddf238afd37f02d1f
     container_name: radarr
     environment:
@@ -127,6 +128,7 @@ services:
         condition: service_healthy
 
   overseerr:
+    # tag: sctx/overseerr:latest
     image: sctx/overseerr@sha256:6197516c9d7b58ccf113455e32aafb94df5d91995fe50e8c2cae6ba6c7c7b7de
     container_name: overseerr
     # Run as non-root to avoid root writes to the config volume.
@@ -160,6 +162,7 @@ services:
     # Subtitle automation — auto-fetches subtitles for everything Sonarr/Radarr
     # downloads. Needs the same /tv and /movies mounts as Sonarr/Radarr so the
     # subtitle file paths line up.
+    # tag: lscr.io/linuxserver/bazarr:latest
     image: lscr.io/linuxserver/bazarr@sha256:4b5e510042bf471c8bafab89cada9774fba2fb25f16ec64235151cacbe847c10
     container_name: bazarr
     environment:

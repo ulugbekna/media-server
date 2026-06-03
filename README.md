@@ -367,11 +367,57 @@ docker compose ps              # what's running
 docker compose logs -f sonarr  # tail a service
 docker compose restart radarr  # restart one service
 docker compose down            # stop everything (keeps data)
-docker compose pull; docker compose up -d   # upgrade all images
 ```
 
 To uninstall completely: `docker compose down -v` and delete the `config/`,
 `downloads/`, and `media/` folders.
+
+### Upgrading (with 7-day quarantine)
+
+All images are pinned to specific SHA digests in `docker-compose*.yml`, so
+`docker compose pull` alone won't update them — that's intentional supply-chain
+hygiene. To roll forward to newer pinned digests, use the included update
+script:
+
+```powershell
+.\update.ps1            # dry-run: report what could change
+.\update.ps1 -Apply     # rewrite the YAML in place (backups: *.bak)
+```
+
+On Linux/macOS: `./update.sh` and `./update.sh --apply`.
+
+The script:
+1. Reads the `# tag: <ref>:tag` annotation above each pinned image.
+2. `docker pull`s that tag, inspects its `Created` timestamp.
+3. **Quarantines images younger than 7 days** — protects you from rolling
+   onto a fresh upstream release that hasn't been in the wild long enough
+   for issues to be reported. Use `--quarantine-days 30` for stricter,
+   `--quarantine-days 0` to disable.
+4. Only proposes updates when the upstream digest *differs* from your
+   pinned one *and* the image is past quarantine.
+5. With `--apply`, rewrites the YAML in place and keeps `.bak` copies for
+   easy revert.
+
+After applying, restart the stack to pick up the new images:
+
+```powershell
+docker compose pull
+docker compose up -d
+```
+
+If anything misbehaves, restore the backups:
+
+```powershell
+Get-ChildItem docker-compose*.yml.bak | ForEach-Object { Move-Item $_ ($_ -replace ".bak$","") -Force }
+docker compose up -d
+```
+
+Or on Linux/macOS:
+
+```bash
+for f in docker-compose*.yml.bak; do mv "$f" "${f%.bak}"; done
+docker compose up -d
+```
 
 ### Backup
 

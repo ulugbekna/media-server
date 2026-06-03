@@ -19,6 +19,7 @@
 
 services:
   searcharr:
+    # tag: toddrob/searcharr:latest
     # Pin to a specific digest (same supply-chain discipline as the rest of the stack).
     image: toddrob/searcharr@sha256:a00fd7e02ea6ef0d7c6181fcf7f33929db0d9bda9283f871937d72c0113b1f48
     container_name: searcharr
