@@ -1,5 +1,7 @@
 .env
 config/
+data/
+# legacy paths (pre-hardlink-refactor) — keep ignored so old checkouts stay clean:
 downloads/
 media/
 *.log

@@ -71,20 +71,23 @@ step 3** — we need to create the media folders first.
 From PowerShell, in the folder containing this README:
 
 ```powershell
-# Defaults: media/, downloads/, config/ next to this README
+# Defaults: data/ and config/ next to this README
 .\setup.ps1
 
-# Or pick your own locations (large drives recommended):
-.\setup.ps1 -MediaRoot D:\media -DownloadsRoot D:\downloads -ConfigRoot D:\media-server\config
+# Or pick your own locations (large drive recommended for -DataRoot):
+.\setup.ps1 -DataRoot D:\media-data -ConfigRoot D:\media-server\config
 ```
 
 The script will:
 
 1. Verify Docker Desktop is running.
-2. Create the folder layout (`movies/`, `tv/`, `downloads/{complete,incomplete}`, per-service `config/`).
-3. Write a `.env` file with your paths.
-4. `docker compose pull && docker compose up -d`.
-5. Wait for every service to respond, then print:
+2. Create the folder layout (`data/torrents/{complete,incomplete}`,
+   `data/media/{tv,movies}`, per-service `config/`).
+3. Verify `data/torrents` and `data/media` share a filesystem so
+   Sonarr/Radarr hardlinks work (see [Disk space (hardlinks)](#disk-space-hardlinks)).
+4. Write a `.env` file with your paths.
+5. `docker compose pull && docker compose up -d`.
+6. Wait for every service to respond, then print:
    - the qBittorrent first-run **admin password** (extracted from container logs),
    - the auto-generated **API keys** for Prowlarr, Sonarr, and Radarr,
    - the in-container paths to use when configuring each app.
@@ -106,8 +109,8 @@ menu and click the tray icon → *Open Plex*).
    both private and public networks if you want LAN devices (phones, TVs)
    to discover the server.
 3. Server name: anything; tick *"Allow me to access my media outside my home"*.
-4. **Add Library → Movies** → folder: `<MediaRoot>\movies`.
-5. **Add Library → TV Shows** → folder: `<MediaRoot>\tv`.
+4. **Add Library → Movies** → folder: `<DataRoot>\media\movies`.
+5. **Add Library → TV Shows** → folder: `<DataRoot>\media\tv`.
 6. Finish the wizard. Plex will be empty for now — files will appear once
    Sonarr/Radarr download something in step 4.
 
@@ -137,9 +140,12 @@ below maps to a section of the original article, just much shorter.
      container restart **unless** you've changed it here. Write your
      new password down now.
 3. **Tools → Options → Downloads**:
-   - Default Save Path: `/downloads/complete`
-   - Keep incomplete torrents in: `/downloads/incomplete`
+   - Default Save Path: `/data/torrents/complete`
+   - Keep incomplete torrents in: `/data/torrents/incomplete`
    - Tick "Create subfolder for torrents with multiple files".
+   - **Do not** change the `/data` prefix — Sonarr/Radarr need the same
+     `/data` mount to hardlink completed files instead of copying them
+     (see [Disk space (hardlinks)](#disk-space-hardlinks) below).
 4. **Tools → Options → BitTorrent**: tick "Torrent Queueing" and "Seeding Limits"
    (e.g. ratio 1.0, then "Remove torrent").
 5. **Log out and log back in** with your new credentials to confirm they work.
@@ -293,8 +299,8 @@ Both are configured identically — Radarr just stores movies instead of TV.
    - Username / Password: the ones you set in qBittorrent above.
    - Click **Test** → **Save**.
 3. **Settings → Media Management → Root Folders → +**
-   - Sonarr: `/tv`
-   - Radarr: `/movies`
+   - Sonarr: `/data/media/tv`
+   - Radarr: `/data/media/movies`
    - Tick "Rename Episodes" / "Rename Movies".
 4. **Settings → Profiles** (Sonarr) / **Settings → Quality** (Radarr):
    defaults are fine. If you want 1080p-only or 4K-only, edit the
@@ -310,8 +316,9 @@ wizard won't accept them otherwise.
 ### 4d. Bazarr (http://localhost:6767)
 
 Bazarr auto-downloads subtitles for every show and movie Sonarr/Radarr
-manages. It mounts the same `/tv` and `/movies` folders so it can write
-subtitle files next to the video files.
+manages. It mounts the same `/data` as Sonarr/Radarr so it can write
+subtitle files next to the video files (at
+`/data/media/tv/...` and `/data/media/movies/...`).
 
 1. Open <http://localhost:6767>. Set a username/password on the first-run
    page → **Save**.
@@ -522,7 +529,77 @@ options:
 
 - Copy `config/` to OneDrive / Dropbox once a week.
 - Or, after `docker compose down`, zip `config/` and upload it.
-- The `media/` folder you can re-download; `downloads/` is throwaway.
+- The `data/media/` folder you can re-download; `data/torrents/` is
+  throwaway (everything in it is either still seeding or already
+  hardlinked into `data/media/`).
+
+### Disk space (hardlinks)
+
+This stack is configured for **hardlinks** between qBittorrent's
+completed downloads and Sonarr/Radarr's library. That means:
+
+- **1× disk usage**, not 2×, even while qBittorrent keeps seeding.
+- **Instant imports** — Sonarr/Radarr "move" a 30 GB movie to the library
+  in milliseconds (it's a `link(2)` syscall, not a copy).
+- **No write amplification** on your SSD.
+
+#### How it works
+
+Hardlinks are a kernel feature: two filenames point to the same physical
+data on disk. The catch is that both filenames must live on the **same
+filesystem** — `link(2)` across mount points fails with `EXDEV`. To
+satisfy that requirement, every service in this stack mounts one shared
+`DATA_ROOT` as `/data` (instead of separate `/downloads` and `/media`
+mounts that would look like different filesystems to the container):
+
+```
+DATA_ROOT/                       (one path on one disk on the host)
+  ├── torrents/
+  │   ├── complete/              ← qBittorrent's "Default Save Path"
+  │   └── incomplete/            ← qBittorrent's "Keep incomplete in"
+  └── media/
+      ├── tv/                    ← Sonarr's Root Folder
+      └── movies/                ← Radarr's Root Folder
+```
+
+The setup script verifies on every run that `DATA_ROOT/torrents` and
+`DATA_ROOT/media` are on the same filesystem and refuses to proceed if
+they aren't — silent fallback to copying is exactly the failure mode
+hardlinks are meant to prevent.
+
+#### Verifying it works (after you've imported something)
+
+On the mini-PC, pick any imported file and inspect its inode + link
+count:
+
+```fish
+docker exec sonarr stat -c "inode=%i links=%h  %n" \
+  "/data/media/tv/<show>/Season 01/<episode>.mkv"
+```
+
+If `links=2` (or more), the same on-disk file is reachable from both
+`/data/media/tv/...` AND `/data/torrents/complete/...`. That's the
+hardlink in action — `du -sh` will count the file once, not twice.
+
+If `links=1`, Sonarr/Radarr fell back to copying. Most common cause:
+"Use Hardlinks instead of Copy" is off in Sonarr/Radarr → Settings →
+Media Management. Sonarr v4 has this on by default; older Radarr
+installs may need it ticked manually.
+
+#### Layout if you want a separate drive for media
+
+If your config + downloads SSD is small and the bulk media library lives
+on a slower spinning disk, you have two options:
+
+- **Mount the big disk at `DATA_ROOT` entirely.** Loses the SSD-speed
+  scratch space for incomplete downloads but keeps hardlinks. Usually
+  fine — torrents are network-bound, not disk-bound.
+- **Give up hardlinks and use two paths.** Edit `docker-compose.yml`
+  back to split mounts (`${MEDIA_ROOT}:/media` and
+  `${DOWNLOADS_ROOT}:/downloads`). You'll pay 2× disk usage for
+  whatever you're seeding. The TRaSH Guides have a
+  [hardlinks guide](https://trash-guides.info/Hardlinks/Hardlinks-and-Instant-Moves/)
+  with all the caveats.
 
 ---
 
@@ -1218,7 +1295,7 @@ Telegram**.
 | Bazarr: subtitle files exist but Plex doesn't show them | Plex picks up subtitle files at next scan. Wire Sonarr/Radarr → Connect → Plex (step 4c.5) so a scan happens on every import, or in Plex run Library → Scan Library Files. |
 | qBittorrent password doesn't work next restart | You must change the temp password in **Settings → Web UI**; otherwise a new one is generated.         |
 | Overseerr won't save Sonarr/Radarr connection  | Add at least one Root Folder + Quality Profile in Sonarr/Radarr first, then retry the Overseerr wizard. |
-| Sonarr error "Remote path mapping"             | qBittorrent and Sonarr both see `/downloads`, so no mapping is needed — make sure both root folders match. |
+| Sonarr error "Remote path mapping"             | qBittorrent and Sonarr both see `/data/torrents/complete`, so no mapping is needed — make sure both root folders match. |
 | Plex doesn't see new files                     | In Plex: Library → Scan Library Files. Or wire **Sonarr/Radarr → Connect → Plex** to auto-refresh.    |
 | Plex unreachable from Sonarr/Radarr (Docker → native Plex) | Use host `host.docker.internal`, port `32400`. Allow Plex through Windows Firewall on private+public networks. |
 | **With VPN:** Sonarr can't reach qBittorrent   | Change Host to `gluetun` in Sonarr/Radarr → Download Clients (qBit's network is shared with gluetun). |

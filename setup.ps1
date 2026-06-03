@@ -10,12 +10,14 @@
     - Waits for qBittorrent to print its first-run password, extracts it, and
       displays it together with all service URLs and API keys.
 
-.PARAMETER MediaRoot
-    Folder for your library (movies/ and tv/ are created inside it).
-    Example: D:\media
-
-.PARAMETER DownloadsRoot
-    Folder for torrent downloads. Example: D:\downloads
+.PARAMETER DataRoot
+    Single parent folder for ALL downloads and media — required for
+    Sonarr/Radarr hardlinking. Layout (created automatically):
+        DataRoot\torrents\complete\
+        DataRoot\torrents\incomplete\
+        DataRoot\media\tv\
+        DataRoot\media\movies\
+    Example: D:\media-data
 
 .PARAMETER ConfigRoot
     Folder for service configs (state, databases, settings).
@@ -44,7 +46,7 @@
     Uses default paths under the current directory.
 
 .EXAMPLE
-    .\setup.ps1 -MediaRoot D:\media -DownloadsRoot D:\downloads
+    .\setup.ps1 -DataRoot D:\media-data -ConfigRoot D:\media-server\config
 
 .EXAMPLE
     .\setup.ps1 -Vpn
@@ -57,8 +59,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$MediaRoot,
-    [string]$DownloadsRoot,
+    [string]$DataRoot,
     [string]$ConfigRoot,
     [string]$Timezone,
     [switch]$Vpn,
@@ -106,22 +107,19 @@ try {
 # -----------------------------------------------------------------------------
 Write-Step "Resolving paths"
 
-if (-not $MediaRoot)     { $MediaRoot     = Join-Path $PSScriptRoot "media" }
-if (-not $DownloadsRoot) { $DownloadsRoot = Join-Path $PSScriptRoot "downloads" }
-if (-not $ConfigRoot)    { $ConfigRoot    = Join-Path $PSScriptRoot "config" }
-if (-not $Timezone)      { $Timezone      = (Get-TimeZone).Id }
+if (-not $DataRoot)   { $DataRoot   = Join-Path $PSScriptRoot "data" }
+if (-not $ConfigRoot) { $ConfigRoot = Join-Path $PSScriptRoot "config" }
+if (-not $Timezone)   { $Timezone   = (Get-TimeZone).Id }
 
 # Docker on Windows accepts forward slashes; normalise for the .env file.
 function ConvertTo-DockerPath($p) {
     return ($p -replace '\\', '/')
 }
 
-$MediaRootDocker     = ConvertTo-DockerPath (Resolve-Path -LiteralPath (New-Item -ItemType Directory -Force -Path $MediaRoot)).Path
-$DownloadsRootDocker = ConvertTo-DockerPath (Resolve-Path -LiteralPath (New-Item -ItemType Directory -Force -Path $DownloadsRoot)).Path
-$ConfigRootDocker    = ConvertTo-DockerPath (Resolve-Path -LiteralPath (New-Item -ItemType Directory -Force -Path $ConfigRoot)).Path
+$DataRootDocker   = ConvertTo-DockerPath (Resolve-Path -LiteralPath (New-Item -ItemType Directory -Force -Path $DataRoot)).Path
+$ConfigRootDocker = ConvertTo-DockerPath (Resolve-Path -LiteralPath (New-Item -ItemType Directory -Force -Path $ConfigRoot)).Path
 
-Write-OK "Media:     $MediaRootDocker"
-Write-OK "Downloads: $DownloadsRootDocker"
+Write-OK "Data:      $DataRootDocker"
 Write-OK "Config:    $ConfigRootDocker"
 
 # -----------------------------------------------------------------------------
@@ -130,10 +128,11 @@ Write-OK "Config:    $ConfigRootDocker"
 Write-Step "Creating folder layout"
 
 $folders = @(
-    "$MediaRoot\movies",
-    "$MediaRoot\tv",
-    "$DownloadsRoot\complete",
-    "$DownloadsRoot\incomplete",
+    # Single-root data layout — see docker-compose.yml header for why.
+    "$DataRoot\torrents\complete",
+    "$DataRoot\torrents\incomplete",
+    "$DataRoot\media\tv",
+    "$DataRoot\media\movies",
     "$ConfigRoot\prowlarr",
     "$ConfigRoot\qbittorrent",
     "$ConfigRoot\sonarr",
@@ -163,10 +162,26 @@ $drive = (Get-Item -LiteralPath $ConfigRoot).PSDrive
 $freeGb = [Math]::Floor($drive.Free / 1GB)
 if ($freeGb -lt 20) {
     Write-ErrMsg "Only $freeGb GB free on drive $($drive.Name):. Need at least 20 GB."
-    Write-Host  "    Free up space or point CONFIG_ROOT/MEDIA_ROOT/DOWNLOADS_ROOT to a larger drive."
+    Write-Host  "    Free up space or point CONFIG_ROOT/DATA_ROOT to a larger drive."
     exit 1
 }
 Write-OK "Disk:      $freeGb GB free on $($drive.Name):"
+
+# --- Same-filesystem (drive) check for hardlink correctness ---
+# Sonarr/Radarr hardlink completed downloads from /data/torrents/... to
+# /data/media/... — that only works if both sub-paths live on the same
+# host drive (single Linux mount inside the container).
+$torrentsDrive = (Get-Item -LiteralPath (Join-Path $DataRoot "torrents")).PSDrive.Name
+$mediaDrive    = (Get-Item -LiteralPath (Join-Path $DataRoot "media")).PSDrive.Name
+if ($torrentsDrive -ne $mediaDrive) {
+    Write-ErrMsg "DATA_ROOT\torrents and DATA_ROOT\media are on DIFFERENT drives:"
+    Write-ErrMsg "    torrents: ${torrentsDrive}:"
+    Write-ErrMsg "    media:    ${mediaDrive}:"
+    Write-ErrMsg "Sonarr/Radarr will fall back to copies (2x disk usage)."
+    Write-ErrMsg "Move both under a single drive and re-run."
+    exit 1
+}
+Write-OK "Hardlinks: torrents and media share one drive (${torrentsDrive}:)"
 
 # --- Port conflicts ---
 $portConflict = $false
@@ -224,12 +239,11 @@ function Update-EnvVar([string]$content, [string]$key, [string]$value) {
 if (Test-Path -LiteralPath $envPath) {
     Write-WarnMsg ".env already exists — preserving existing credentials; updating path/UID fields only."
     $envContent = Get-Content -LiteralPath $envPath -Raw
-    $envContent = Update-EnvVar $envContent "TZ"            $Timezone
-    $envContent = Update-EnvVar $envContent "PUID"          "1000"
-    $envContent = Update-EnvVar $envContent "PGID"          "1000"
-    $envContent = Update-EnvVar $envContent "CONFIG_ROOT"    $ConfigRootDocker
-    $envContent = Update-EnvVar $envContent "DOWNLOADS_ROOT" $DownloadsRootDocker
-    $envContent = Update-EnvVar $envContent "MEDIA_ROOT"     $MediaRootDocker
+    $envContent = Update-EnvVar $envContent "TZ"          $Timezone
+    $envContent = Update-EnvVar $envContent "PUID"        "1000"
+    $envContent = Update-EnvVar $envContent "PGID"        "1000"
+    $envContent = Update-EnvVar $envContent "CONFIG_ROOT" $ConfigRootDocker
+    $envContent = Update-EnvVar $envContent "DATA_ROOT"   $DataRootDocker
     [System.IO.File]::WriteAllText($envPath, $envContent, [System.Text.UTF8Encoding]::new($false))
 } else {
     $envBody = @"
@@ -238,8 +252,7 @@ TZ=$Timezone
 PUID=1000
 PGID=1000
 CONFIG_ROOT=$ConfigRootDocker
-DOWNLOADS_ROOT=$DownloadsRootDocker
-MEDIA_ROOT=$MediaRootDocker
+DATA_ROOT=$DataRootDocker
 "@
     # Use WriteAllText to guarantee BOM-less UTF-8 on both PS 5.1 and PS 7+.
     [System.IO.File]::WriteAllText($envPath, $envBody, [System.Text.UTF8Encoding]::new($false))
@@ -593,10 +606,13 @@ if ($Telegram -and $telegramBotPassword) {
 Write-Host ""
 
 Write-Host "Paths inside containers (use these in Sonarr/Radarr/qBittorrent UI):" -ForegroundColor Magenta
-Write-Host "  qBittorrent complete dir   /downloads/complete"
-Write-Host "  qBittorrent incomplete dir /downloads/incomplete"
-Write-Host "  Sonarr TV root folder      /tv"
-Write-Host "  Radarr Movies root folder  /movies"
+Write-Host "  qBittorrent complete dir   /data/torrents/complete"
+Write-Host "  qBittorrent incomplete dir /data/torrents/incomplete"
+Write-Host "  Sonarr TV root folder      /data/media/tv"
+Write-Host "  Radarr Movies root folder  /data/media/movies"
+Write-Host ""
+Write-Host "These all live under the SAME /data mount inside every container —" -ForegroundColor Magenta
+Write-Host "that's what makes hardlinking (instant import, 1x disk usage) work."
 if ($Vpn) {
     Write-Host ""
     Write-Host "VPN is active. Important wiring difference:" -ForegroundColor Yellow

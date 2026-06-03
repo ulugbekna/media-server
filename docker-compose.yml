@@ -18,6 +18,22 @@
 # discovery). A commented-out Plex service is provided below for users who
 # prefer to run it in Docker.
 #
+# Disk layout — TRaSH "Hardlinks and Atomic Moves":
+#   DATA_ROOT/                       (host path, e.g. D:/media-data)
+#     ├── torrents/
+#     │   ├── complete/    qBit's "Default Save Path"
+#     │   └── incomplete/  qBit's "Keep incomplete torrents in"
+#     └── media/
+#         ├── tv/          Sonarr's Root Folder
+#         └── movies/      Radarr's Root Folder
+#
+# Every service that touches files mounts DATA_ROOT as /data so that
+# Sonarr/Radarr can hardlink from /data/torrents/complete/... to
+# /data/media/{tv,movies}/... — instant import, 1× disk usage, qBit keeps
+# seeding the original file. (Hardlinks require the source and destination
+# to be on the same Linux mount point inside the container, which is why
+# we use ONE bind mount per service instead of two.)
+#
 # Usage:
 #   1. Copy .env.example to .env and edit the paths.
 #   2. Run setup.ps1 (Windows) or setup.sh (Linux/macOS).
@@ -57,7 +73,9 @@ services:
       - TORRENTING_PORT=6881
     volumes:
       - ${CONFIG_ROOT}/qbittorrent:/config
-      - ${DOWNLOADS_ROOT}:/downloads
+      # Single bind mount under /data so Sonarr/Radarr can hardlink imports
+      # to /data/media/{tv,movies}/... — see header comment.
+      - ${DATA_ROOT}:/data
     ports:
       # Web UI — admin only, loopback only.
       - "127.0.0.1:8080:8080"
@@ -83,8 +101,9 @@ services:
       - TZ=${TZ:-UTC}
     volumes:
       - ${CONFIG_ROOT}/sonarr:/config
-      - ${MEDIA_ROOT}/tv:/tv
-      - ${DOWNLOADS_ROOT}:/downloads
+      # Same single /data mount as qBittorrent so 'link(2)' across
+      # /data/torrents/... -> /data/media/tv/... succeeds.
+      - ${DATA_ROOT}:/data
     ports:
       - "127.0.0.1:8989:8989"
     healthcheck:
@@ -110,8 +129,7 @@ services:
       - TZ=${TZ:-UTC}
     volumes:
       - ${CONFIG_ROOT}/radarr:/config
-      - ${MEDIA_ROOT}/movies:/movies
-      - ${DOWNLOADS_ROOT}:/downloads
+      - ${DATA_ROOT}:/data
     ports:
       - "127.0.0.1:7878:7878"
     healthcheck:
@@ -160,8 +178,8 @@ services:
 
   bazarr:
     # Subtitle automation — auto-fetches subtitles for everything Sonarr/Radarr
-    # downloads. Needs the same /tv and /movies mounts as Sonarr/Radarr so the
-    # subtitle file paths line up.
+    # downloads. Mounts the same /data as Sonarr/Radarr so subtitle files
+    # land next to the video files they describe.
     # tag: lscr.io/linuxserver/bazarr:latest
     image: lscr.io/linuxserver/bazarr@sha256:4b5e510042bf471c8bafab89cada9774fba2fb25f16ec64235151cacbe847c10
     container_name: bazarr
@@ -171,8 +189,7 @@ services:
       - TZ=${TZ:-UTC}
     volumes:
       - ${CONFIG_ROOT}/bazarr:/config
-      - ${MEDIA_ROOT}/tv:/tv
-      - ${MEDIA_ROOT}/movies:/movies
+      - ${DATA_ROOT}:/data
     ports:
       - "127.0.0.1:6767:6767"
     healthcheck:
@@ -205,6 +222,6 @@ services:
   #     - PLEX_CLAIM=
   #   volumes:
   #     - ${CONFIG_ROOT}/plex:/config
-  #     - ${MEDIA_ROOT}/tv:/tv
-  #     - ${MEDIA_ROOT}/movies:/movies
+  #     # Point Plex at /data/media/{tv,movies} inside the container.
+  #     - ${DATA_ROOT}:/data
   #   restart: unless-stopped
