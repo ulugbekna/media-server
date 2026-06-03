@@ -1,0 +1,33 @@
+# =============================================================================
+# Telegram bot override for the media server stack.
+#
+# Adds Searcharr (https://github.com/toddrob99/searcharr), a Telegram bot
+# that lets you search and add movies (Radarr) and TV shows (Sonarr) from
+# your phone via chat messages like "/movie inception" or "/series severance".
+#
+# Usage:
+#   1. Create a Telegram bot via @BotFather (see README "Telegram requests").
+#   2. Put the bot token in .env as TELEGRAM_BOT_TOKEN=...
+#   3. Run setup.ps1 -Telegram (Windows) or ./setup.sh --telegram (Linux/macOS).
+#      The script will auto-generate Searcharr's settings.py using the API
+#      keys it already extracts from Sonarr/Radarr.
+#   4. In Telegram, message your bot:  /start <password>
+#
+# Note: Searcharr talks to Sonarr/Radarr by Docker service name on the
+# default Compose network — no host networking required.
+# =============================================================================
+
+services:
+  searcharr:
+    # Pin to a specific digest (same supply-chain discipline as the rest of the stack).
+    image: toddrob/searcharr@sha256:a00fd7e02ea6ef0d7c6181fcf7f33929db0d9bda9283f871937d72c0113b1f48
+    container_name: searcharr
+    volumes:
+      - ${CONFIG_ROOT}/searcharr/data:/app/data
+      - ${CONFIG_ROOT}/searcharr/logs:/app/logs
+    environment:
+      - TZ=${TZ:-UTC}
+    restart: unless-stopped
+    depends_on:
+      - sonarr
+      - radarr

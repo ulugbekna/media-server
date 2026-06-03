@@ -25,6 +25,11 @@
     Route qBittorrent through a Gluetun VPN container. Requires VPN_*
     values to be set in .env (see .env.example for examples).
 
+.PARAMETER Telegram
+    Run the Searcharr Telegram bot so you can request movies/shows from
+    your phone. Requires TELEGRAM_BOT_TOKEN to be set in .env (get a
+    token from @BotFather; see README "Telegram requests").
+
 .EXAMPLE
     .\setup.ps1
     Uses default paths under the current directory.
@@ -35,6 +40,10 @@
 .EXAMPLE
     .\setup.ps1 -Vpn
     Same as above but routes qBittorrent through the VPN.
+
+.EXAMPLE
+    .\setup.ps1 -Vpn -Telegram
+    Full stack: VPN + Telegram request bot.
 #>
 
 [CmdletBinding()]
@@ -43,7 +52,8 @@ param(
     [string]$DownloadsRoot,
     [string]$ConfigRoot,
     [string]$Timezone,
-    [switch]$Vpn
+    [switch]$Vpn,
+    [switch]$Telegram
 )
 
 $ErrorActionPreference = "Stop"
@@ -117,7 +127,9 @@ $folders = @(
     "$ConfigRoot\qbittorrent",
     "$ConfigRoot\sonarr",
     "$ConfigRoot\radarr",
-    "$ConfigRoot\overseerr"
+    "$ConfigRoot\overseerr",
+    "$ConfigRoot\searcharr\data",
+    "$ConfigRoot\searcharr\logs"
 )
 foreach ($f in $folders) {
     if (-not (Test-Path -LiteralPath $f)) {
@@ -189,6 +201,36 @@ if ($Vpn) {
             Write-Host    "    See .env.example for Mullvad / ProtonVPN / NordVPN examples."
             exit 1
         }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# 4c. Telegram preflight (Searcharr is brought up after settings.py generation)
+# -----------------------------------------------------------------------------
+$telegramBotToken = $null
+if ($Telegram) {
+    Write-Step "Telegram bot mode enabled (Searcharr)"
+
+    $envContent = Get-Content -LiteralPath $envPath -Raw
+    if ($envContent -notmatch '(?m)^TELEGRAM_BOT_TOKEN=') {
+        $envExample = Get-Content -LiteralPath (Join-Path $PSScriptRoot ".env.example") -Raw
+        $tgBlock    = ($envExample -split "# Telegram bot \(optional\)")[1]
+        if ($tgBlock) {
+            Add-Content -LiteralPath $envPath -Value "`n# Telegram bot (optional)$tgBlock"
+        }
+        $envContent = Get-Content -LiteralPath $envPath -Raw
+    }
+
+    $tokenMatch = [regex]::Match($envContent, '(?m)^TELEGRAM_BOT_TOKEN=(.+)$')
+    if ($tokenMatch.Success -and $tokenMatch.Groups[1].Value.Trim()) {
+        $telegramBotToken = $tokenMatch.Groups[1].Value.Trim()
+    } else {
+        Write-WarnMsg "TELEGRAM_BOT_TOKEN is empty in .env."
+        Write-Host    "    1. Open Telegram, message @BotFather, send /newbot, follow prompts."
+        Write-Host    "    2. Copy the bot token (e.g. 1234567890:AAA-...) into .env:"
+        Write-Host    "         TELEGRAM_BOT_TOKEN=<paste here>"
+        Write-Host    "    3. Re-run: .\setup.ps1 -Telegram"
+        exit 1
     }
 }
 
@@ -268,6 +310,60 @@ $radarrKey   = Get-ArrApiKey  (Join-Path $ConfigRoot "radarr\config.xml")
 $jackettKey  = Get-JackettApiKey (Join-Path $ConfigRoot "jackett\Jackett\ServerConfig.json")
 
 # -----------------------------------------------------------------------------
+# 7b. Telegram bot — generate Searcharr settings.py and start the container
+# -----------------------------------------------------------------------------
+$telegramBotPassword      = $null
+$telegramAdminBotPassword = $null
+if ($Telegram) {
+    Write-Step "Configuring Searcharr"
+    if (-not $sonarrKey -or -not $radarrKey) {
+        Write-ErrMsg "Cannot configure Searcharr: Sonarr/Radarr API keys not found yet."
+        Write-Host  "    Give the services another minute to initialise, then re-run with -Telegram."
+    } else {
+        $searcharrSettings = Join-Path $ConfigRoot "searcharr\data\settings.py"
+        $envContent = Get-Content -LiteralPath $envPath -Raw
+        $envPwMatch    = [regex]::Match($envContent, '(?m)^TELEGRAM_BOT_PASSWORD=(.*)$')
+        $envAdminMatch = [regex]::Match($envContent, '(?m)^TELEGRAM_ADMIN_PASSWORD=(.*)$')
+
+        function New-RandomPassword {
+            $bytes = New-Object byte[] 16
+            [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+            $b64 = [Convert]::ToBase64String($bytes) -replace '[/+=]', ''
+            return $b64.Substring(0, [Math]::Min(16, $b64.Length))
+        }
+
+        if (Test-Path -LiteralPath $searcharrSettings) {
+            Write-WarnMsg "Searcharr settings.py already exists — preserving passwords."
+            $existing = Get-Content -LiteralPath $searcharrSettings -Raw
+            $pm = [regex]::Match($existing, '(?m)^searcharr_password\s*=\s*"([^"]*)"')
+            $am = [regex]::Match($existing, '(?m)^searcharr_admin_password\s*=\s*"([^"]*)"')
+            $telegramBotPassword      = if ($pm.Success) { $pm.Groups[1].Value } else { New-RandomPassword }
+            $telegramAdminBotPassword = if ($am.Success) { $am.Groups[1].Value } else { New-RandomPassword }
+        } else {
+            $telegramBotPassword      = if ($envPwMatch.Success    -and $envPwMatch.Groups[1].Value.Trim())    { $envPwMatch.Groups[1].Value.Trim() }    else { New-RandomPassword }
+            $telegramAdminBotPassword = if ($envAdminMatch.Success -and $envAdminMatch.Groups[1].Value.Trim()) { $envAdminMatch.Groups[1].Value.Trim() } else { New-RandomPassword }
+        }
+
+        $template = Get-Content -LiteralPath (Join-Path $PSScriptRoot "searcharr-settings.template.py") -Raw
+        # Use literal string Replace (not -replace) so passwords/tokens with $ or \ aren't interpreted as regex.
+        $rendered = $template.
+            Replace('__SEARCHARR_PASSWORD__',       $telegramBotPassword).
+            Replace('__SEARCHARR_ADMIN_PASSWORD__', $telegramAdminBotPassword).
+            Replace('__TGRAM_TOKEN__',              $telegramBotToken).
+            Replace('__SONARR_API_KEY__',           $sonarrKey).
+            Replace('__RADARR_API_KEY__',           $radarrKey)
+        [System.IO.File]::WriteAllText($searcharrSettings, $rendered, [System.Text.UTF8Encoding]::new($false))
+        Write-OK "Wrote $searcharrSettings"
+
+        Write-Step "Starting Searcharr"
+        $tgArgs = @("compose", "-f", "docker-compose.yml")
+        if ($Vpn) { $tgArgs += @("-f", "docker-compose.vpn.yml") }
+        $tgArgs += @("-f", "docker-compose.telegram.yml", "up", "-d", "searcharr")
+        & docker @tgArgs
+    }
+}
+
+# -----------------------------------------------------------------------------
 # 8. Summary
 # -----------------------------------------------------------------------------
 Write-Host ""
@@ -299,6 +395,12 @@ if ($qbtPass) {
 if ($jackettKey) { Write-Host "  Jackett  API key: $jackettKey" }
 if ($sonarrKey)  { Write-Host "  Sonarr   API key: $sonarrKey" }
 if ($radarrKey)  { Write-Host "  Radarr   API key: $radarrKey" }
+if ($Telegram -and $telegramBotPassword) {
+    Write-Host ""
+    Write-Host "  Telegram bot password:        $telegramBotPassword"
+    Write-Host "  Telegram bot admin password:  $telegramAdminBotPassword"
+    Write-Host "  Authenticate by messaging your bot:  /start $telegramBotPassword"
+}
 Write-Host ""
 
 Write-Host "Paths inside containers (use these in Sonarr/Radarr/qBittorrent UI):" -ForegroundColor Magenta
@@ -313,6 +415,14 @@ if ($Vpn) {
     Write-Host "  Host field to 'gluetun' (NOT 'qbittorrent'). qBit shares the"
     Write-Host "  gluetun container's network and is only reachable via that name."
     Write-Host "  Check your public IP with:  docker exec gluetun wget -qO- https://ifconfig.me"
+}
+if ($Telegram) {
+    Write-Host ""
+    Write-Host "Telegram bot is active." -ForegroundColor Yellow
+    Write-Host "  1. Open Telegram and find your bot (search the name you gave @BotFather)."
+    Write-Host "  2. Send:   /start <password shown above>"
+    Write-Host "  3. Try:    /movie inception   or   /series severance"
+    Write-Host "  Logs:      docker logs searcharr"
 }
 Write-Host ""
 Write-Host "Next steps: see README.md, section 'Wire the services together'." -ForegroundColor Magenta

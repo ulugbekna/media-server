@@ -8,12 +8,15 @@
 set -euo pipefail
 
 USE_VPN=0
+USE_TELEGRAM=0
 for arg in "$@"; do
     case "$arg" in
         --vpn) USE_VPN=1 ;;
+        --telegram) USE_TELEGRAM=1 ;;
         -h|--help)
-            echo "Usage: $0 [--vpn]"
-            echo "  --vpn   Route qBittorrent through Gluetun (fill VPN_* in .env first)"
+            echo "Usage: $0 [--vpn] [--telegram]"
+            echo "  --vpn       Route qBittorrent through Gluetun (fill VPN_* in .env first)"
+            echo "  --telegram  Run Searcharr (fill TELEGRAM_BOT_TOKEN in .env first)"
             exit 0 ;;
     esac
 done
@@ -50,6 +53,7 @@ TZ_VALUE="${TZ:-$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||' |
 mkdir -p "$MEDIA_ROOT"/{movies,tv}
 mkdir -p "$DOWNLOADS_ROOT"/{complete,incomplete}
 mkdir -p "$CONFIG_ROOT"/{jackett,qbittorrent,sonarr,radarr,overseerr}
+mkdir -p "$CONFIG_ROOT"/searcharr/{data,logs}
 
 green "Media:     $MEDIA_ROOT"
 green "Downloads: $DOWNLOADS_ROOT"
@@ -109,6 +113,26 @@ if [ "$USE_VPN" = "1" ]; then
     fi
 fi
 
+if [ "$USE_TELEGRAM" = "1" ]; then
+    cyan "Telegram bot mode enabled (Searcharr)"
+    # Append Telegram settings template from .env.example if absent.
+    if ! grep -q '^TELEGRAM_BOT_TOKEN=' .env; then
+        awk '/# Telegram bot \(optional\)/,/^TELEGRAM_ADMIN_PASSWORD=/' .env.example >> .env || true
+        echo "" >> .env
+    fi
+    # shellcheck source=/dev/null
+    set -a; . ./.env; set +a
+    if [ -z "${TELEGRAM_BOT_TOKEN:-}" ]; then
+        red "TELEGRAM_BOT_TOKEN is empty in .env."
+        echo "    1. Open Telegram, message @BotFather, send /newbot, follow prompts."
+        echo "    2. Copy the bot token (e.g. 1234567890:AAA-...) into .env:"
+        echo "         TELEGRAM_BOT_TOKEN=<paste here>"
+        echo "    3. Re-run: ./setup.sh --telegram"
+        exit 1
+    fi
+    # Searcharr is brought up *after* settings.py is generated below.
+fi
+
 cyan "Pulling images (first run can take a few minutes)"
 "${COMPOSE[@]}" pull
 cyan "Starting containers"
@@ -155,6 +179,39 @@ sonarr_key="$(extract_arr_key  "$CONFIG_ROOT/sonarr/config.xml")"
 radarr_key="$(extract_arr_key  "$CONFIG_ROOT/radarr/config.xml")"
 jackett_key="$(extract_jackett_key "$CONFIG_ROOT/jackett/Jackett/ServerConfig.json")"
 
+# 6b. Telegram bot — generate settings.py and start Searcharr ----------------
+if [ "$USE_TELEGRAM" = "1" ]; then
+    cyan "Configuring Searcharr"
+    if [ -z "$sonarr_key" ] || [ -z "$radarr_key" ]; then
+        red "Cannot configure Searcharr: Sonarr/Radarr API keys not found yet."
+        echo "    Give the services another minute to initialise, then re-run with --telegram."
+    else
+        searcharr_settings="$CONFIG_ROOT/searcharr/data/settings.py"
+        if [ -f "$searcharr_settings" ]; then
+            yellow "Searcharr settings.py already exists — preserving passwords."
+            existing_pw=$(grep -E '^searcharr_password' "$searcharr_settings" | sed -E 's/.*"([^"]*)".*/\1/')
+            existing_admin_pw=$(grep -E '^searcharr_admin_password' "$searcharr_settings" | sed -E 's/.*"([^"]*)".*/\1/')
+            tg_pw="$existing_pw"
+            tg_admin_pw="$existing_admin_pw"
+        else
+            tg_pw="${TELEGRAM_BOT_PASSWORD:-$(openssl rand -base64 18 2>/dev/null | tr -d '/+=' | cut -c1-16 || head -c 16 /dev/urandom | base64 | tr -d '/+=' | cut -c1-16)}"
+            tg_admin_pw="${TELEGRAM_ADMIN_PASSWORD:-$(openssl rand -base64 18 2>/dev/null | tr -d '/+=' | cut -c1-16 || head -c 16 /dev/urandom | base64 | tr -d '/+=' | cut -c1-16)}"
+        fi
+        sed -e "s|__SEARCHARR_PASSWORD__|$tg_pw|" \
+            -e "s|__SEARCHARR_ADMIN_PASSWORD__|$tg_admin_pw|" \
+            -e "s|__TGRAM_TOKEN__|$TELEGRAM_BOT_TOKEN|" \
+            -e "s|__SONARR_API_KEY__|$sonarr_key|" \
+            -e "s|__RADARR_API_KEY__|$radarr_key|" \
+            searcharr-settings.template.py > "$searcharr_settings"
+        chmod 600 "$searcharr_settings"
+        green "Wrote $searcharr_settings"
+        cyan "Starting Searcharr"
+        docker compose -f docker-compose.yml \
+            $([ "$USE_VPN" = "1" ] && echo "-f docker-compose.vpn.yml") \
+            -f docker-compose.telegram.yml up -d searcharr
+    fi
+fi
+
 # 7. Summary -----------------------------------------------------------------
 yellow "⚠  API keys and passwords follow. Copy them to a password manager, then"
 yellow "   clear your terminal history:  history -c  (bash) or  Clear-History  (PowerShell)."
@@ -184,6 +241,12 @@ fi
 [ -n "$jackett_key" ] && echo "  Jackett  API key: $jackett_key"
 [ -n "$sonarr_key"  ] && echo "  Sonarr   API key: $sonarr_key"
 [ -n "$radarr_key"  ] && echo "  Radarr   API key: $radarr_key"
+if [ "$USE_TELEGRAM" = "1" ] && [ -n "${tg_pw:-}" ]; then
+    echo ""
+    echo "  Telegram bot password:        $tg_pw"
+    echo "  Telegram bot admin password:  $tg_admin_pw"
+    echo "  Authenticate by messaging your bot:  /start $tg_pw"
+fi
 
 cat <<'EOF'
 
@@ -204,5 +267,14 @@ if [ "$USE_VPN" = "1" ]; then
     echo   "    gluetun container's network and is only reachable via that name."
     echo   "    Verify your public IP with:"
     echo   "      docker exec gluetun wget -qO- https://ifconfig.me"
+    echo   ""
+fi
+
+if [ "$USE_TELEGRAM" = "1" ]; then
+    yellow "Telegram bot is active."
+    echo   "    1. Open Telegram and find your bot (search for the name you gave @BotFather)."
+    echo   "    2. Send: /start <password shown above>"
+    echo   "    3. Then try: /movie inception   or   /series severance"
+    echo   "    Logs: docker logs searcharr"
     echo   ""
 fi

@@ -11,6 +11,8 @@ A drop-in, one-command Docker setup for the stack from
 | Radarr       | Movie automation                     | http://localhost:7878   |
 | Overseerr    | Pretty request UI on top of *arr     | http://localhost:5055   |
 | Plex         | Media server (installed natively)    | http://localhost:32400  |
+| Gluetun      | (optional) VPN for qBittorrent       | —                       |
+| Searcharr    | (optional) Telegram bot for requests | (Telegram chat)         |
 
 What the article asks you to do by hand — install six apps, create folders,
 remember which port is which, copy API keys between web UIs — this repo does
@@ -397,6 +399,89 @@ Should print a NordVPN IP in your chosen country, **not** your home IP.
 
 ---
 
+## Telegram requests
+
+Want to add movies and TV shows from your phone without opening Overseerr?
+This stack ships an optional [Searcharr](https://github.com/toddrob99/searcharr)
+Telegram bot that talks directly to Sonarr and Radarr. Send `/movie inception`
+in chat, pick from a carousel of results, hit "Add" — done.
+
+### 1. Create a bot (2 minutes)
+
+1. Open Telegram, search for **@BotFather**, click **Start**.
+2. Send `/newbot`. Pick a display name (e.g. `My Media Server`) and a username
+   ending in `bot` (e.g. `my_media_server_bot`).
+3. BotFather replies with a token like `1234567890:AAH...` — **copy it**.
+4. (Recommended) Send `/setjoingroups`, pick your bot, choose **Disable** —
+   this prevents random group adds.
+
+### 2. Put the token in `.env`
+
+```dotenv
+TELEGRAM_BOT_TOKEN=1234567890:AAH...
+```
+
+You can leave `TELEGRAM_BOT_PASSWORD` and `TELEGRAM_ADMIN_PASSWORD` blank —
+the setup script generates strong random ones and shows them on completion.
+
+### 3. Start the bot
+
+```powershell
+.\setup.ps1 -Telegram          # bot only
+.\setup.ps1 -Vpn -Telegram     # bot + VPN
+```
+On Linux/macOS: `./setup.sh --telegram` (or `--vpn --telegram`).
+
+The script:
+- Auto-generates `config/searcharr/data/settings.py` using the Sonarr/Radarr
+  API keys it already extracts. **No manual API-key copy-pasting.**
+- Wires Searcharr to Sonarr at `http://sonarr:8989` and Radarr at
+  `http://radarr:7878` via the internal Docker network (no host networking,
+  no LAN IPs).
+- Prints the bot password at the end. Save it.
+
+### 4. Use the bot
+
+In Telegram, message your bot:
+
+```
+/start <password shown by the setup script>
+/movie inception
+/series severance
+```
+
+Tap the "Add" button on the result; Sonarr/Radarr take over from there.
+Every item added via the bot is auto-tagged `telegram` in Sonarr/Radarr so
+you can filter or set tag-specific rules later.
+
+### Security notes
+
+- **Password-protect always.** Without `/start <password>`, Searcharr ignores
+  every message. Anyone who guesses your bot's username still can't add anything.
+- **Never authenticate as admin in a group chat** — the password is visible to
+  everyone present. Always DM the bot.
+- **The bot token equals full control of the bot.** Treat it like a password.
+  If leaked, send `/revoke` to BotFather to invalidate it, then update `.env`
+  and re-run setup.
+- **Searcharr's data folder contains the token in plaintext** (`settings.py`).
+  It lives under `config/searcharr/data/`, which is git-ignored. The setup
+  script also `chmod 600`s it on Unix.
+- Searcharr does **not** expose any inbound ports — it polls Telegram outbound.
+  No firewall holes needed.
+
+### Why not Overseerr's built-in Telegram?
+
+Overseerr's Telegram integration only **sends notifications** to a channel
+(e.g. "movie X is ready"). It does **not** accept incoming requests via chat.
+For two-way request flow you need a separate bot like Searcharr.
+
+If you want both — Searcharr for requesting + Overseerr notifications for
+"ready to watch" alerts — that's fine; they don't conflict. Configure
+Overseerr's Telegram channel separately under **Settings → Notifications →
+Telegram**.
+
+---
+
 ## Troubleshooting
 
 | Problem                                        | Fix                                                                                                   |
@@ -413,3 +498,6 @@ Should print a NordVPN IP in your chosen country, **not** your home IP.
 | **With VPN:** Sonarr can't reach qBittorrent   | Change Host to `gluetun` in Sonarr/Radarr → Download Clients (qBit's network is shared with gluetun). |
 | **With VPN:** containers can't reach anything  | Your LAN subnet probably isn't in `LAN_SUBNET`. Check with `ipconfig` (Windows) or `ip a` (Linux), then update `.env` and `docker compose restart gluetun`. |
 | **With VPN:** torrents stuck at 0 B/s          | Provider blocks P2P on this server. Change `VPN_COUNTRIES`/`VPN_CITIES` to a P2P-allowed region in `.env`. |
+| **Telegram:** bot doesn't reply                | Wrong token. Verify with `docker logs searcharr` — `InvalidToken` means the value in `.env` is wrong or revoked. |
+| **Telegram:** bot ignores `/start`             | You must include the password: `/start <password>`. The password was printed by the setup script; find it in `config/searcharr/data/settings.py` if you lost it. |
+| **Telegram:** Searcharr can't reach Sonarr/Radarr | Restart the bot after Sonarr/Radarr regenerate their API keys: `docker compose -f docker-compose.yml -f docker-compose.telegram.yml restart searcharr`. The keys are baked into `settings.py` at setup time. |
