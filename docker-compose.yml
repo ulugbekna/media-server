@@ -1,0 +1,124 @@
+# =============================================================================
+# Home Media Server stack
+#
+# Brings up the *arr stack from the dev.to article in a single command:
+#   - Jackett     (indexer proxy)       http://localhost:9117
+#   - qBittorrent (torrent client)      http://localhost:8080
+#   - Sonarr      (TV automation)       http://localhost:8989
+#   - Radarr      (Movie automation)    http://localhost:7878
+#   - Overseerr   (request UI)          http://localhost:5055
+#
+# Plex is intentionally NOT included by default; the recommended install on
+# Windows is the native Plex Media Server (better HW transcoding, easier
+# discovery). A commented-out Plex service is provided below for users who
+# prefer to run it in Docker.
+#
+# Usage:
+#   1. Copy .env.example to .env and edit the paths.
+#   2. Run setup.ps1 (Windows) or setup.sh (Linux/macOS).
+# =============================================================================
+
+services:
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    container_name: jackett
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - AUTO_UPDATE=true
+    volumes:
+      - ${CONFIG_ROOT}/jackett:/config
+      - ${DOWNLOADS_ROOT}:/downloads
+    ports:
+      - "9117:9117"
+    restart: unless-stopped
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - WEBUI_PORT=8080
+      - TORRENTING_PORT=6881
+    volumes:
+      - ${CONFIG_ROOT}/qbittorrent:/config
+      - ${DOWNLOADS_ROOT}:/downloads
+    ports:
+      - "8080:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${CONFIG_ROOT}/sonarr:/config
+      - ${MEDIA_ROOT}/tv:/tv
+      - ${DOWNLOADS_ROOT}:/downloads
+    ports:
+      - "8989:8989"
+    restart: unless-stopped
+    depends_on:
+      - jackett
+      - qbittorrent
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${CONFIG_ROOT}/radarr:/config
+      - ${MEDIA_ROOT}/movies:/movies
+      - ${DOWNLOADS_ROOT}:/downloads
+    ports:
+      - "7878:7878"
+    restart: unless-stopped
+    depends_on:
+      - jackett
+      - qbittorrent
+
+  overseerr:
+    image: sctx/overseerr:latest
+    container_name: overseerr
+    environment:
+      - LOG_LEVEL=info
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${CONFIG_ROOT}/overseerr:/app/config
+    ports:
+      - "5055:5055"
+    restart: unless-stopped
+    depends_on:
+      - sonarr
+      - radarr
+
+  # ---------------------------------------------------------------------------
+  # Plex (optional — uncomment to run in Docker instead of natively)
+  # ---------------------------------------------------------------------------
+  # plex:
+  #   image: lscr.io/linuxserver/plex:latest
+  #   container_name: plex
+  #   network_mode: host  # required for Plex auto-discovery (Linux/macOS)
+  #   environment:
+  #     - PUID=${PUID:-1000}
+  #     - PGID=${PGID:-1000}
+  #     - TZ=${TZ:-UTC}
+  #     - VERSION=docker
+  #     # Get a claim token from https://plex.tv/claim (valid for 4 minutes)
+  #     - PLEX_CLAIM=
+  #   volumes:
+  #     - ${CONFIG_ROOT}/plex:/config
+  #     - ${MEDIA_ROOT}/tv:/tv
+  #     - ${MEDIA_ROOT}/movies:/movies
+  #   restart: unless-stopped
