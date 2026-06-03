@@ -39,6 +39,12 @@ services:
     ports:
       # Bind to loopback — this admin UI should only be reachable from localhost.
       - "127.0.0.1:9696:9696"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9696/ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   qbittorrent:
@@ -59,6 +65,13 @@ services:
       # Torrent port — must be reachable from peers for seeding; bind to all interfaces.
       - "6881:6881"
       - "6881:6881/udp"
+    healthcheck:
+      # qBit's web UI returns 200 for / when running; a HEAD request is enough.
+      test: ["CMD-SHELL", "curl -fsSI http://localhost:8080/ -o /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   sonarr:
@@ -74,10 +87,18 @@ services:
       - ${DOWNLOADS_ROOT}:/downloads
     ports:
       - "127.0.0.1:8989:8989"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8989/ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
     restart: unless-stopped
     depends_on:
-      - prowlarr
-      - qbittorrent
+      prowlarr:
+        condition: service_healthy
+      qbittorrent:
+        condition: service_healthy
 
   radarr:
     image: lscr.io/linuxserver/radarr@sha256:c0a4335d4249b46102f64cf6fa27ffc3bddfd9138fac1e4ddf238afd37f02d1f
@@ -92,10 +113,18 @@ services:
       - ${DOWNLOADS_ROOT}:/downloads
     ports:
       - "127.0.0.1:7878:7878"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:7878/ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
     restart: unless-stopped
     depends_on:
-      - prowlarr
-      - qbittorrent
+      prowlarr:
+        condition: service_healthy
+      qbittorrent:
+        condition: service_healthy
 
   overseerr:
     image: sctx/overseerr@sha256:6197516c9d7b58ccf113455e32aafb94df5d91995fe50e8c2cae6ba6c7c7b7de
@@ -113,10 +142,19 @@ services:
       # Enable Overseerr's built-in authentication (Settings → Users) and
       # consider putting it behind a reverse proxy for HTTPS.
       - "5055:5055"
+    healthcheck:
+      # /api/v1/status returns version info publicly without auth.
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:5055/api/v1/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
     depends_on:
-      - sonarr
-      - radarr
+      sonarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy
 
   bazarr:
     # Subtitle automation — auto-fetches subtitles for everything Sonarr/Radarr
@@ -134,10 +172,19 @@ services:
       - ${MEDIA_ROOT}/movies:/movies
     ports:
       - "127.0.0.1:6767:6767"
+    healthcheck:
+      # Bazarr's API requires a key; probe the root which returns 200/302.
+      test: ["CMD-SHELL", "curl -fsSI http://localhost:6767/ -o /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
     restart: unless-stopped
     depends_on:
-      - sonarr
-      - radarr
+      sonarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy
 
   # ---------------------------------------------------------------------------
   # Plex (optional — uncomment to run in Docker instead of natively)
