@@ -1,0 +1,75 @@
+# =============================================================================
+# VPN override for the media server stack.
+#
+# Adds a Gluetun container that runs a VPN client, and routes qBittorrent
+# through it. Sonarr, Radarr, Jackett and Overseerr keep their normal LAN
+# access (so indexer lookups and metadata fetches aren't tunneled).
+#
+# Usage:
+#   1. Fill in the VPN_* values in your .env file (see .env.example).
+#   2. Start with both files:
+#        docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d
+#      (setup.ps1 -Vpn / setup.sh --vpn does this for you.)
+#
+# How it works:
+#   - qBittorrent's network namespace is shared with gluetun, so all of its
+#     traffic goes through the VPN. If the VPN drops, qBittorrent loses
+#     network access entirely — built-in kill switch, no IP leaks.
+#   - qBittorrent's web UI (port 8080) and torrent port (6881) are exposed
+#     on the *gluetun* container instead of qbittorrent.
+#   - IMPORTANT: when wiring Sonarr/Radarr to qBittorrent, use the hostname
+#     "gluetun" instead of "qbittorrent" — the qbittorrent container has no
+#     network of its own when running this override.
+# =============================================================================
+
+services:
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      # --- Provider selection ---
+      # See https://github.com/qdm12/gluetun-wiki for every supported provider
+      # and the exact env vars each one wants. Examples below.
+      - VPN_SERVICE_PROVIDER=${VPN_SERVICE_PROVIDER}
+      - VPN_TYPE=${VPN_TYPE:-wireguard}
+
+      # --- WireGuard credentials (Mullvad, ProtonVPN, AirVPN, custom, etc.) ---
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY:-}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES:-}
+      - WIREGUARD_PRESHARED_KEY=${WIREGUARD_PRESHARED_KEY:-}
+
+      # --- OpenVPN credentials (NordVPN, Surfshark, PIA, etc.) ---
+      - OPENVPN_USER=${OPENVPN_USER:-}
+      - OPENVPN_PASSWORD=${OPENVPN_PASSWORD:-}
+
+      # --- Server selection (country/city/region; format varies by provider) ---
+      - SERVER_COUNTRIES=${VPN_COUNTRIES:-}
+      - SERVER_CITIES=${VPN_CITIES:-}
+      - SERVER_REGIONS=${VPN_REGIONS:-}
+
+      # --- DNS / firewall ---
+      - DOT=on
+      - FIREWALL_OUTBOUND_SUBNETS=${LAN_SUBNET:-192.168.0.0/16}
+      - TZ=${TZ:-UTC}
+    ports:
+      # qBittorrent web UI (lives in gluetun's namespace now)
+      - "8080:8080"
+      # qBittorrent torrent port
+      - "6881:6881"
+      - "6881:6881/udp"
+      # Gluetun's own control server (optional, handy for `curl localhost:8000/v1/...`)
+      - "8000:8000"
+    restart: unless-stopped
+
+  qbittorrent:
+    # Share gluetun's network namespace. All qBit traffic now goes via VPN.
+    network_mode: "service:gluetun"
+    # Ports MUST be declared on gluetun (above), not here. Override to empty.
+    ports: !reset []
+    depends_on:
+      gluetun:
+        condition: service_started

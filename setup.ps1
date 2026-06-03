@@ -21,12 +21,20 @@
     Folder for service configs (state, databases, settings).
     Example: D:\media-server\config
 
+.PARAMETER Vpn
+    Route qBittorrent through a Gluetun VPN container. Requires VPN_*
+    values to be set in .env (see .env.example for examples).
+
 .EXAMPLE
     .\setup.ps1
     Uses default paths under the current directory.
 
 .EXAMPLE
     .\setup.ps1 -MediaRoot D:\media -DownloadsRoot D:\downloads
+
+.EXAMPLE
+    .\setup.ps1 -Vpn
+    Same as above but routes qBittorrent through the VPN.
 #>
 
 [CmdletBinding()]
@@ -34,7 +42,8 @@ param(
     [string]$MediaRoot,
     [string]$DownloadsRoot,
     [string]$ConfigRoot,
-    [string]$Timezone
+    [string]$Timezone,
+    [switch]$Vpn
 )
 
 $ErrorActionPreference = "Stop"
@@ -136,14 +145,40 @@ Set-Content -LiteralPath $envPath -Value $envBody -Encoding UTF8
 Write-OK ".env written."
 
 # -----------------------------------------------------------------------------
+# 4b. VPN preflight
+# -----------------------------------------------------------------------------
+$composeArgs = @("compose")
+if ($Vpn) {
+    $composeArgs += @("-f", "docker-compose.yml", "-f", "docker-compose.vpn.yml")
+    Write-Step "VPN mode enabled (gluetun + qBittorrent)"
+
+    $envExample = Get-Content -LiteralPath (Join-Path $PSScriptRoot ".env.example") -Raw
+    $vpnBlock   = ($envExample -split "# VPN settings \(optional\)")[1]
+    if ($vpnBlock) {
+        Add-Content -LiteralPath $envPath -Value "`n# VPN settings (optional)$vpnBlock"
+    }
+
+    if (-not $env:VPN_SERVICE_PROVIDER) {
+        $envContent = Get-Content -LiteralPath $envPath -Raw
+        if ($envContent -notmatch '(?m)^VPN_SERVICE_PROVIDER=\S') {
+            Write-WarnMsg "VPN_SERVICE_PROVIDER is empty in .env."
+            Write-Host    "    Edit .env and fill in your provider credentials, then re-run:"
+            Write-Host    "      .\setup.ps1 -Vpn"
+            Write-Host    "    See .env.example for Mullvad / ProtonVPN / NordVPN examples."
+            exit 1
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
 # 5. Start the stack
 # -----------------------------------------------------------------------------
 Write-Step "Pulling images (first run can take a few minutes)"
-docker compose pull
+& docker @composeArgs pull
 if ($LASTEXITCODE -ne 0) { Write-ErrMsg "docker compose pull failed."; exit 1 }
 
 Write-Step "Starting containers"
-docker compose up -d
+& docker @composeArgs up -d
 if ($LASTEXITCODE -ne 0) { Write-ErrMsg "docker compose up failed."; exit 1 }
 
 # -----------------------------------------------------------------------------
@@ -244,6 +279,14 @@ Write-Host "  qBittorrent complete dir   /downloads/complete"
 Write-Host "  qBittorrent incomplete dir /downloads/incomplete"
 Write-Host "  Sonarr TV root folder      /tv"
 Write-Host "  Radarr Movies root folder  /movies"
+if ($Vpn) {
+    Write-Host ""
+    Write-Host "VPN is active. Important wiring difference:" -ForegroundColor Yellow
+    Write-Host "  In Sonarr/Radarr -> Download Clients -> qBittorrent, set the"
+    Write-Host "  Host field to 'gluetun' (NOT 'qbittorrent'). qBit shares the"
+    Write-Host "  gluetun container's network and is only reachable via that name."
+    Write-Host "  Check your public IP with:  docker exec gluetun wget -qO- https://ifconfig.me"
+}
 Write-Host ""
 Write-Host "Next steps: see README.md, section 'Wire the services together'." -ForegroundColor Magenta
 Write-Host ""

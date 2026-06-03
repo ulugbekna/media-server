@@ -161,15 +161,80 @@ To uninstall completely: `docker compose down -v` and delete the `config/`,
 
 ## Recommended add-ons
 
-- **VPN.** Run qBittorrent behind a VPN container (e.g.
-  [`qmcgaw/gluetun`](https://github.com/qdm12/gluetun)) by setting
-  `network_mode: "service:gluetun"` on the qbittorrent service. Without one,
-  your home IP is visible to every peer.
+- **VPN** — see [VPN](#vpn) below. Strongly recommended for torrent traffic.
 - **Prowlarr** instead of Jackett — modern replacement that *auto-syncs*
   indexers to Sonarr/Radarr, eliminating the manual Torznab dance entirely.
   Image: `lscr.io/linuxserver/prowlarr:latest` on port `9696`.
 - **Bazarr** for automatic subtitles
   (`lscr.io/linuxserver/bazarr:latest`, port `6767`).
+
+---
+
+## VPN
+
+Routing torrent traffic through a VPN is strongly recommended. This repo
+ships a Gluetun-based override that routes **only qBittorrent** through the
+VPN, leaving Sonarr/Radarr/Jackett/Overseerr on your LAN. That keeps:
+
+- indexer queries and TMDB/TVDB lookups fast and unblocked,
+- the web UIs reachable at their normal `localhost:*` ports,
+- Plex auto-discovery on the LAN working.
+
+If the VPN drops, qBittorrent loses all network access (built-in kill
+switch). No IP leaks.
+
+### Other options (and why I don't recommend them)
+
+| Option | Verdict |
+| --- | --- |
+| **Gluetun container, qBit only** *(this repo)* | ✅ Recommended. Per-app, with kill switch. |
+| Provider-specific containers (e.g. `bubuntux/nordlynx`) | ❌ Same idea as gluetun but worse — narrower, smaller community. |
+| Windows-level VPN app ("always on") | ❌ Tunnels everything — breaks Sonarr/Radarr lookups, RDP, Plex remote access. |
+| Router-level VPN (OpenWRT, pfSense) | ⚠️ Cleanest networking but requires capable router; tunnels everything from the mini-PC. |
+| Tailscale / WireGuard | Different problem — for **inbound** remote access. Complementary, not a substitute. |
+
+### Setup
+
+1. Pick a provider [supported by Gluetun](https://github.com/qdm12/gluetun-wiki/tree/main/setup/providers) — Mullvad, ProtonVPN, AirVPN, PIA, NordVPN, Surfshark and ~25 more.
+2. Get credentials:
+   - **WireGuard providers** (Mullvad, ProtonVPN, AirVPN, …): generate a WireGuard config in your provider's dashboard, copy the private key and the assigned address.
+   - **OpenVPN providers** (NordVPN, Surfshark, PIA, …): use your provider's *service* credentials (not your account login).
+3. Edit `.env` (created by the setup script) and fill in the `VPN_*` block. `.env.example` has copy-paste templates for the three most common providers.
+4. Start the stack with VPN enabled:
+   ```powershell
+   .\setup.ps1 -Vpn
+   ```
+   …or on Linux/macOS:
+   ```bash
+   ./setup.sh --vpn
+   ```
+   Under the hood this runs `docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d`.
+5. **Verify the tunnel is up:**
+   ```powershell
+   docker exec gluetun wget -qO- https://ifconfig.me
+   ```
+   Should show your provider's IP, not your home IP.
+
+### Important wiring difference when VPN is on
+
+The qBittorrent container shares Gluetun's network namespace, so it has **no
+hostname of its own** on the Docker network. When configuring Sonarr/Radarr →
+Download Clients → qBittorrent, set:
+
+- **Host:** `gluetun`  *(not `qbittorrent`)*
+- **Port:** `8080`
+
+Everything else is unchanged. `setup.ps1 -Vpn` prints this reminder when it
+finishes.
+
+### Port forwarding (if you care about seeding ratio)
+
+Some providers support inbound port forwarding (essential for being a seeder
+on private trackers). Mullvad dropped this in 2023. Currently working:
+**ProtonVPN, AirVPN, PIA, PrivateVPN**. Gluetun handles the port-forward
+negotiation automatically for these; check
+[the gluetun wiki](https://github.com/qdm12/gluetun-wiki/blob/main/setup/advanced/vpn-port-forwarding.md)
+for how to feed the forwarded port back into qBittorrent.
 
 ---
 
@@ -182,3 +247,6 @@ To uninstall completely: `docker compose down -v` and delete the `config/`,
 | qBittorrent password doesn't work next restart | You must change the temp password in **Settings → Web UI**; otherwise a new one is generated.         |
 | Sonarr error "Remote path mapping"             | qBittorrent and Sonarr both see `/downloads`, so no mapping is needed — make sure both root folders match. |
 | Plex doesn't see new files                     | In Plex: Library → Scan Library Files. Or wire **Sonarr/Radarr → Connect → Plex** to auto-refresh.    |
+| **With VPN:** Sonarr can't reach qBittorrent   | Change Host to `gluetun` in Sonarr/Radarr → Download Clients (qBit's network is shared with gluetun). |
+| **With VPN:** containers can't reach anything  | Your LAN subnet probably isn't in `LAN_SUBNET`. Check with `ipconfig` (Windows) or `ip a` (Linux), then update `.env` and `docker compose restart gluetun`. |
+| **With VPN:** torrents stuck at 0 B/s          | Provider blocks P2P on this server. Change `VPN_COUNTRIES`/`VPN_CITIES` to a P2P-allowed region in `.env`. |

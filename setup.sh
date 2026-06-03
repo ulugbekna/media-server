@@ -2,8 +2,21 @@
 # -----------------------------------------------------------------------------
 # One-shot installer for the home media server stack on Linux / macOS.
 # (Equivalent of setup.ps1.)
+#
+# Usage: ./setup.sh [--vpn]
 # -----------------------------------------------------------------------------
 set -euo pipefail
+
+USE_VPN=0
+for arg in "$@"; do
+    case "$arg" in
+        --vpn) USE_VPN=1 ;;
+        -h|--help)
+            echo "Usage: $0 [--vpn]"
+            echo "  --vpn   Route qBittorrent through Gluetun (fill VPN_* in .env first)"
+            exit 0 ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -56,10 +69,28 @@ EOF
 green ".env written."
 
 # 4. Pull and start ----------------------------------------------------------
+COMPOSE=(docker compose)
+if [ "$USE_VPN" = "1" ]; then
+    COMPOSE+=(-f docker-compose.yml -f docker-compose.vpn.yml)
+    cyan "VPN mode enabled (gluetun + qBittorrent)"
+    # Append VPN settings template from .env.example if absent.
+    if ! grep -q '^VPN_SERVICE_PROVIDER=' .env; then
+        awk '/# VPN settings \(optional\)/,/^$/' .env.example >> .env || true
+        echo "" >> .env
+    fi
+    if ! grep -qE '^VPN_SERVICE_PROVIDER=\S' .env; then
+        red "VPN_SERVICE_PROVIDER is empty in .env."
+        echo "    Edit .env and fill in your provider credentials, then re-run:"
+        echo "      ./setup.sh --vpn"
+        echo "    See .env.example for Mullvad / ProtonVPN / NordVPN examples."
+        exit 1
+    fi
+fi
+
 cyan "Pulling images (first run can take a few minutes)"
-docker compose pull
+"${COMPOSE[@]}" pull
 cyan "Starting containers"
-docker compose up -d
+"${COMPOSE[@]}" up -d
 
 # 5. Wait for services -------------------------------------------------------
 wait_for_url() {
@@ -140,3 +171,13 @@ Paths inside containers (use these in Sonarr/Radarr/qBittorrent UI):
 Next steps: see README.md, section "Wire the services together".
 
 EOF
+
+if [ "$USE_VPN" = "1" ]; then
+    yellow "VPN is active. Important wiring difference:"
+    echo   "    In Sonarr/Radarr -> Download Clients -> qBittorrent, set the"
+    echo   "    Host field to 'gluetun' (NOT 'qbittorrent'). qBit shares the"
+    echo   "    gluetun container's network and is only reachable via that name."
+    echo   "    Verify your public IP with:"
+    echo   "      docker exec gluetun wget -qO- https://ifconfig.me"
+    echo   ""
+fi
