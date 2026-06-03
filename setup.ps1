@@ -127,6 +127,7 @@ $folders = @(
     "$ConfigRoot\qbittorrent",
     "$ConfigRoot\sonarr",
     "$ConfigRoot\radarr",
+    "$ConfigRoot\bazarr",
     "$ConfigRoot\overseerr",
     "$ConfigRoot\searcharr\data",
     "$ConfigRoot\searcharr\logs"
@@ -265,6 +266,7 @@ $services = @(
     @{ name = "qBittorrent"; url = "http://localhost:8080" },
     @{ name = "Sonarr";      url = "http://localhost:8989" },
     @{ name = "Radarr";      url = "http://localhost:7878" },
+    @{ name = "Bazarr";      url = "http://localhost:6767" },
     @{ name = "Overseerr";   url = "http://localhost:5055" }
 )
 foreach ($s in $services) {
@@ -367,6 +369,7 @@ Write-Host "  Prowlarr     http://localhost:9696"
 Write-Host "  qBittorrent  http://localhost:8080"
 Write-Host "  Sonarr       http://localhost:8989"
 Write-Host "  Radarr       http://localhost:7878"
+Write-Host "  Bazarr       http://localhost:6767"
 Write-Host "  Overseerr    http://localhost:5055"
 Write-Host ""
 

@@ -52,7 +52,7 @@ TZ_VALUE="${TZ:-$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||' |
 
 mkdir -p "$MEDIA_ROOT"/{movies,tv}
 mkdir -p "$DOWNLOADS_ROOT"/{complete,incomplete}
-mkdir -p "$CONFIG_ROOT"/{prowlarr,qbittorrent,sonarr,radarr,overseerr}
+mkdir -p "$CONFIG_ROOT"/{prowlarr,qbittorrent,sonarr,radarr,bazarr,overseerr}
 mkdir -p "$CONFIG_ROOT"/searcharr/{data,logs}
 
 green "Media:     $MEDIA_ROOT"
@@ -157,6 +157,7 @@ wait_for_url "Prowlarr"    "http://localhost:9696" || true
 wait_for_url "qBittorrent" "http://localhost:8080" || true
 wait_for_url "Sonarr"      "http://localhost:8989" || true
 wait_for_url "Radarr"      "http://localhost:7878" || true
+wait_for_url "Bazarr"      "http://localhost:6767" || true
 wait_for_url "Overseerr"   "http://localhost:5055" || true
 
 # 6. Extract credentials & API keys -----------------------------------------
@@ -221,6 +222,7 @@ cat <<EOF
   qBittorrent  http://localhost:8080
   Sonarr       http://localhost:8989
   Radarr       http://localhost:7878
+  Bazarr       http://localhost:6767
   Overseerr    http://localhost:5055
 
 Credentials & API keys

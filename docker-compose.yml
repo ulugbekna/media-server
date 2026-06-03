@@ -6,6 +6,7 @@
 #   - qBittorrent (torrent client)      http://localhost:8080
 #   - Sonarr      (TV automation)       http://localhost:8989
 #   - Radarr      (Movie automation)    http://localhost:7878
+#   - Bazarr      (subtitle automation) http://localhost:6767
 #   - Overseerr   (request UI)          http://localhost:5055
 #
 # (The dev.to article uses Jackett; we use Prowlarr — Jackett's modern
@@ -112,6 +113,27 @@ services:
       # Enable Overseerr's built-in authentication (Settings → Users) and
       # consider putting it behind a reverse proxy for HTTPS.
       - "5055:5055"
+    restart: unless-stopped
+    depends_on:
+      - sonarr
+      - radarr
+
+  bazarr:
+    # Subtitle automation — auto-fetches subtitles for everything Sonarr/Radarr
+    # downloads. Needs the same /tv and /movies mounts as Sonarr/Radarr so the
+    # subtitle file paths line up.
+    image: lscr.io/linuxserver/bazarr@sha256:4b5e510042bf471c8bafab89cada9774fba2fb25f16ec64235151cacbe847c10
+    container_name: bazarr
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ${CONFIG_ROOT}/bazarr:/config
+      - ${MEDIA_ROOT}/tv:/tv
+      - ${MEDIA_ROOT}/movies:/movies
+    ports:
+      - "127.0.0.1:6767:6767"
     restart: unless-stopped
     depends_on:
       - sonarr

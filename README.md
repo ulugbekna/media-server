@@ -9,6 +9,7 @@ A drop-in, one-command Docker setup for the stack from
 | qBittorrent  | Torrent download client              | http://localhost:8080   |
 | Sonarr       | TV-show automation                   | http://localhost:8989   |
 | Radarr       | Movie automation                     | http://localhost:7878   |
+| Bazarr       | Subtitle automation                  | http://localhost:6767   |
 | Overseerr    | Pretty request UI on top of *arr     | http://localhost:5055   |
 | Plex         | Media server (installed natively)    | http://localhost:32400  |
 | Gluetun      | (optional) VPN for qBittorrent       | —                       |
@@ -306,7 +307,44 @@ Both are configured identically — Radarr just stores movies instead of TV.
 Do **both Sonarr and Radarr** before moving to Overseerr — Overseerr's
 wizard won't accept them otherwise.
 
-### 4d. Overseerr (http://localhost:5055)
+### 4d. Bazarr (http://localhost:6767)
+
+Bazarr auto-downloads subtitles for every show and movie Sonarr/Radarr
+manages. It mounts the same `/tv` and `/movies` folders so it can write
+subtitle files next to the video files.
+
+1. Open <http://localhost:6767>. Set a username/password on the first-run
+   page → **Save**.
+2. **Settings → Languages → Languages Filter**: tick every language you
+   want subtitles for (most users: English + native language). **Save**.
+3. **Settings → Languages → Languages Profiles → Add New**:
+   - Name: `Default`
+   - Languages: add the ones from step 2 in order of preference.
+   - **Cutoff**: pick the language that, once found, stops further searches
+     (usually English).
+   - Tick **Hearing-Impaired: No** unless you want SDH.
+   - **Save**.
+4. **Settings → Sonarr**:
+   - Address: `sonarr`  (service name; not `localhost`)
+   - Port: `8989`
+   - API Key: the Sonarr key the setup script printed.
+   - Click **Test** → green ✓ → **Save**.
+   - Tick **Defined Language Profile** = `Default`.
+5. **Settings → Radarr**: same as above with `radarr`, port `7878`, the
+   Radarr API key, language profile `Default`.
+6. **Settings → Providers**: enable a few subtitle providers. Free, good
+   defaults: **OpenSubtitles.com** (free account required — sign up first
+   at <https://www.opensubtitles.com>), **Podnapisi**, **Subscene**.
+   Avoid the legacy "OpenSubtitles.org" — slower and quota-limited.
+7. *(Optional)* **Settings → Scheduler** → tune how often Bazarr re-scans
+   for missing subtitles. Default (6 h) is fine.
+
+After saving, Bazarr does an initial sync — within a few minutes it'll
+populate the **Series** and **Movies** tabs with everything from Sonarr/
+Radarr and start hunting subtitles for them. New downloads get subtitles
+automatically within seconds of import.
+
+### 4e. Overseerr (http://localhost:5055)
 
 The first-run wizard walks you through it:
 
@@ -402,8 +440,9 @@ ssh youruser@192.168.1.42 "hostname"
 ```fish
 ssh -L 8989:localhost:8989 \
     -L 7878:localhost:7878 \
-    -L 9117:localhost:9117 \
+    -L 9696:localhost:9696 \
     -L 8080:localhost:8080 \
+    -L 6767:localhost:6767 \
     -L 5055:localhost:5055 \
     -L 8000:localhost:8000 \
     youruser@192.168.1.42
@@ -417,6 +456,7 @@ While that SSH session stays open, on your Mac:
 | http://localhost:7878 | Radarr                    |
 | http://localhost:9696 | Prowlarr                  |
 | http://localhost:8080 | qBittorrent               |
+| http://localhost:6767 | Bazarr                    |
 | http://localhost:5055 | Overseerr (also LAN-reachable directly) |
 | http://localhost:8000 | Gluetun control API (VPN only) |
 
@@ -435,8 +475,9 @@ Host miniserver
     # Forward every web UI in the media stack:
     LocalForward 8989 localhost:8989
     LocalForward 7878 localhost:7878
-    LocalForward 9117 localhost:9117
+    LocalForward 9696 localhost:9696
     LocalForward 8080 localhost:8080
+    LocalForward 6767 localhost:6767
     LocalForward 5055 localhost:5055
     LocalForward 8000 localhost:8000
     # Keep the connection healthy on flaky Wi-Fi:
@@ -493,8 +534,6 @@ connect with macOS Finder → `⌘K` → `vnc://192.168.1.42`.
 ## Recommended add-ons
 
 - **VPN** — see [VPN](#vpn) below. Strongly recommended for torrent traffic.
-- **Bazarr** for automatic subtitles
-  (`lscr.io/linuxserver/bazarr:latest`, port `6767`).
 - **Jackett** if you'd rather use it instead of Prowlarr (the dev.to
   article's original choice). Image: `lscr.io/linuxserver/jackett:latest`
   on port `9117`. You'd lose Prowlarr's auto-sync to Sonarr/Radarr; the
@@ -840,6 +879,8 @@ Telegram**.
 | Prowlarr: indexer red, error "Cloudflare challenge" | Add the FlareSolverr container (see Prowlarr section), then in Prowlarr → Settings → Indexers → Add Indexer Proxy → FlareSolverr with host `http://flaresolverr:8191/`. |
 | Prowlarr: added an indexer but Sonarr/Radarr don't see it | Prowlarr → Settings → Apps → click the Sonarr/Radarr row → **Sync App Indexers** (or wait ~30 s for the next auto-sync). If still nothing, Test the connection and re-check the *arr API key. |
 | Prowlarr: indexer was working, now red | Public trackers go down or change domains. Edit the indexer row, check for an updated URL; if there's no fix, disable the indexer and add an alternative. |
+| Bazarr: no subtitles being downloaded | Check Settings → Sonarr/Radarr show a green ✓ Test result. Then Settings → Languages → Languages Profiles must have at least one profile, and Settings → Sonarr/Radarr must have that profile selected under "Defined Language Profile". |
+| Bazarr: subtitle files exist but Plex doesn't show them | Plex picks up subtitle files at next scan. Wire Sonarr/Radarr → Connect → Plex (step 4c.5) so a scan happens on every import, or in Plex run Library → Scan Library Files. |
 | qBittorrent password doesn't work next restart | You must change the temp password in **Settings → Web UI**; otherwise a new one is generated.         |
 | Overseerr won't save Sonarr/Radarr connection  | Add at least one Root Folder + Quality Profile in Sonarr/Radarr first, then retry the Overseerr wizard. |
 | Sonarr error "Remote path mapping"             | qBittorrent and Sonarr both see `/downloads`, so no mapping is needed — make sure both root folders match. |
