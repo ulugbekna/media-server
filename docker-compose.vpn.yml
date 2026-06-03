@@ -24,7 +24,7 @@
 
 services:
   gluetun:
-    image: qmcgaw/gluetun:latest
+    image: qmcgaw/gluetun@sha256:10b4895fde4499c2d1d9fbd8e681d040ede0efe8c6cfe5d0c51daf0461836ee8
     container_name: gluetun
     cap_add:
       - NET_ADMIN
@@ -55,16 +55,25 @@ services:
 
       # --- DNS / firewall ---
       - DOT=on
-      - FIREWALL_OUTBOUND_SUBNETS=${LAN_SUBNET:-192.168.0.0/16}
+      # Narrow to your actual LAN subnet (e.g. 192.168.1.0/24). A /16 allows
+      # traffic to the entire 192.168.x.x range; /24 limits it to one subnet.
+      - FIREWALL_OUTBOUND_SUBNETS=${LAN_SUBNET:-192.168.1.0/24}
       - TZ=${TZ:-UTC}
+    # Gluetun exposes a built-in healthcheck endpoint.
+    healthcheck:
+      test: ["CMD", "/gluetun-entrypoint", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     ports:
-      # qBittorrent web UI (lives in gluetun's namespace now)
-      - "8080:8080"
-      # qBittorrent torrent port
+      # qBittorrent web UI (lives in gluetun's namespace now) — loopback only.
+      - "127.0.0.1:8080:8080"
+      # qBittorrent torrent port — peers need inbound access for seeding.
       - "6881:6881"
       - "6881:6881/udp"
-      # Gluetun's own control server (optional, handy for `curl localhost:8000/v1/...`)
-      - "8000:8000"
+      # Gluetun control API — loopback only (no need to expose on LAN).
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
 
   qbittorrent:
@@ -74,4 +83,4 @@ services:
     ports: !reset []
     depends_on:
       gluetun:
-        condition: service_started
+        condition: service_healthy

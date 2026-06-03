@@ -332,6 +332,19 @@ to WireGuard once it's working.
 NordVPN doesn't expose the WireGuard private key in the dashboard, so you
 extract it with a one-shot container.
 
+> **⚠ Security note:** The command below runs a third-party image
+> (`ghcr.io/bubuntux/nordlynx`) with `--cap-add=NET_ADMIN` (elevated
+> privileges) and passes your NordVPN access token as an environment variable.
+> The token grants full access to your NordVPN account. Take these precautions:
+>
+> - **Use a short-lived token.** Generate a token with a short expiry (1 day
+>   is enough — you only need it once to extract the key).
+> - **Delete the token immediately** after step 2 from your NordVPN dashboard.
+> - **Run the command in a private terminal window** and clear your history
+>   afterwards (`Clear-History` in PowerShell; `history -c` in bash).
+> - The extracted WireGuard private key is long-lived; store it in your `.env`
+>   file (which is git-ignored) and nowhere else.
+
 1. **Get an access token.** <https://my.nordaccount.com> → **NordVPN** →
    **Set up NordVPN manually** → **Access tokens** → **Generate new token**
    ([direct link](https://my.nordaccount.com/dashboard/nordvpn/access-tokens/)).

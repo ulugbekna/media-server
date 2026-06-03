@@ -20,22 +20,27 @@
 
 services:
   jackett:
-    image: lscr.io/linuxserver/jackett:latest
+    # Pin to a specific digest to prevent unexpected upstream changes.
+    # To upgrade: run `docker pull lscr.io/linuxserver/jackett:latest`,
+    # inspect the new digest with `docker inspect`, and update this line.
+    image: lscr.io/linuxserver/jackett@sha256:b4f4360a2e88649f2104804494a63cdfa7bec4507f2477d965ebecdc29b1b8c0
     container_name: jackett
     environment:
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
       - TZ=${TZ:-UTC}
-      - AUTO_UPDATE=true
+      # AUTO_UPDATE omitted intentionally — self-patching bypasses image-level
+      # supply-chain controls. Upgrade by pulling a new pinned image digest.
     volumes:
       - ${CONFIG_ROOT}/jackett:/config
       - ${DOWNLOADS_ROOT}:/downloads
     ports:
-      - "9117:9117"
+      # Bind to loopback — this admin UI should only be reachable from localhost.
+      - "127.0.0.1:9117:9117"
     restart: unless-stopped
 
   qbittorrent:
-    image: lscr.io/linuxserver/qbittorrent:latest
+    image: lscr.io/linuxserver/qbittorrent@sha256:715d2bfbcf1cd3d734cbbd4fbd599eb7ea0642eaa079a372dd0d343f59516700
     container_name: qbittorrent
     environment:
       - PUID=${PUID:-1000}
@@ -47,13 +52,15 @@ services:
       - ${CONFIG_ROOT}/qbittorrent:/config
       - ${DOWNLOADS_ROOT}:/downloads
     ports:
-      - "8080:8080"
+      # Web UI — admin only, loopback only.
+      - "127.0.0.1:8080:8080"
+      # Torrent port — must be reachable from peers for seeding; bind to all interfaces.
       - "6881:6881"
       - "6881:6881/udp"
     restart: unless-stopped
 
   sonarr:
-    image: lscr.io/linuxserver/sonarr:latest
+    image: lscr.io/linuxserver/sonarr@sha256:0b5c4803f92456fb9b65bae8375716ea120b4ea17b3cced7da32b63f0085782b
     container_name: sonarr
     environment:
       - PUID=${PUID:-1000}
@@ -64,14 +71,14 @@ services:
       - ${MEDIA_ROOT}/tv:/tv
       - ${DOWNLOADS_ROOT}:/downloads
     ports:
-      - "8989:8989"
+      - "127.0.0.1:8989:8989"
     restart: unless-stopped
     depends_on:
       - jackett
       - qbittorrent
 
   radarr:
-    image: lscr.io/linuxserver/radarr:latest
+    image: lscr.io/linuxserver/radarr@sha256:c0a4335d4249b46102f64cf6fa27ffc3bddfd9138fac1e4ddf238afd37f02d1f
     container_name: radarr
     environment:
       - PUID=${PUID:-1000}
@@ -82,21 +89,27 @@ services:
       - ${MEDIA_ROOT}/movies:/movies
       - ${DOWNLOADS_ROOT}:/downloads
     ports:
-      - "7878:7878"
+      - "127.0.0.1:7878:7878"
     restart: unless-stopped
     depends_on:
       - jackett
       - qbittorrent
 
   overseerr:
-    image: sctx/overseerr:latest
+    image: sctx/overseerr@sha256:6197516c9d7b58ccf113455e32aafb94df5d91995fe50e8c2cae6ba6c7c7b7de
     container_name: overseerr
+    # Run as non-root to avoid root writes to the config volume.
+    user: "${PUID:-1000}:${PGID:-1000}"
     environment:
       - LOG_LEVEL=info
       - TZ=${TZ:-UTC}
     volumes:
       - ${CONFIG_ROOT}/overseerr:/app/config
     ports:
+      # Overseerr is intentionally bound to all interfaces so LAN devices
+      # (phones, other computers) can submit requests without SSH tunnelling.
+      # Enable Overseerr's built-in authentication (Settings → Users) and
+      # consider putting it behind a reverse proxy for HTTPS.
       - "5055:5055"
     restart: unless-stopped
     depends_on:
