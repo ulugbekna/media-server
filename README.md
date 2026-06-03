@@ -142,13 +142,110 @@ The *arr apps handle .rar imports for you.
 
 ### 4b. Jackett (http://localhost:9117)
 
-1. **Add indexer** → search for the trackers you use (e.g. 1337x, EZTV,
-   Nyaa, RARBG-mirrors), click the wrench, save.
-2. The **API key** in the top-right is the same one the setup script printed.
-3. The unified Torznab feed you'll paste into Sonarr/Radarr next is:
-   `http://jackett:9117/api/v2.0/indexers/all/results/torznab`
-   Note: inside the Docker network use the hostname `jackett`, **not**
-   `127.0.0.1`. Sonarr/Radarr talk to Jackett over the internal network.
+Jackett is a **proxy for torrent trackers** — it lets Sonarr/Radarr talk
+to ~500 different sites through one consistent API (Torznab). The
+container ships with **zero indexers configured**; you pick which trackers
+to enable.
+
+#### Pick your trackers
+
+There are two flavours of indexer in Jackett, and you'll likely want a
+mix of both:
+
+**Public trackers** — no signup, no credentials. Lower-quality releases on
+average, and many trackers go down or change domains every few months,
+but the easiest place to start. Common picks (mileage varies — try a few,
+keep the ones that return results):
+
+| Indexer            | What it's good for                  |
+| ------------------ | ----------------------------------- |
+| 1337x              | General / movies / TV               |
+| The Pirate Bay     | General — long-tail catalog         |
+| TorrentGalaxy      | General — active community          |
+| EZTV               | TV only                             |
+| YTS                | Movies (small files, 720p/1080p)    |
+| Nyaa               | Anime                               |
+| LimeTorrents       | General fallback                    |
+| TheRARBG / RARBG2  | Movies/TV (original RARBG died 2023; these are community mirrors of varying quality) |
+
+> The list of *working* public trackers is a moving target. If one
+> returns errors, disable it and try another. Check
+> [jackett-indexers GitHub Discussions](https://github.com/Jackett/Jackett/discussions/categories/indexers)
+> for current status.
+
+**Private trackers** — require an account (usually invite-only). Vastly
+better quality, retention, and seeding ratios, but you need an existing
+membership. Popular ones supported by Jackett: IPTorrents, TorrentLeech,
+HDBits, BroadcasTheNet, PassThePopcorn, Redacted. You'll need your
+username/password (or for some, a session cookie or 2FA-token-aware login).
+
+#### Add an indexer (UX walkthrough)
+
+1. Open <http://localhost:9117>.
+2. Click **+ Add indexer** at the top.
+3. Use the filter box. For public trackers, type the name (e.g. `1337x`)
+   and click the **+** icon on the row.
+4. For private trackers, fill in **Username / Password** (and any cookie
+   or 2FA field the form asks for).
+5. Click **Okay** — Jackett does a test query against the tracker.
+   - ✅ Green tick = working.
+   - ⚠ Yellow / ❌ Red = tracker down, captcha required, or credentials
+     wrong. Click the red row for details; the **Wrench icon** lets you
+     edit the config.
+6. Back on the main page, click **Test All** to confirm every enabled
+   indexer is still answering.
+
+#### Cloudflare-protected trackers: FlareSolverr
+
+Several private and some public trackers (e.g. some TorrentLeech mirrors,
+1337x at times) sit behind Cloudflare's "checking your browser" page,
+which blocks Jackett. The fix is **FlareSolverr** — a headless-browser
+companion that solves the challenge.
+
+Add this to `docker-compose.yml` (uncommented, alongside Jackett):
+
+```yaml
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    environment:
+      - LOG_LEVEL=info
+      - TZ=${TZ:-UTC}
+    ports:
+      - "127.0.0.1:8191:8191"
+    restart: unless-stopped
+```
+
+Then in Jackett → **gear icon (top right)** → **FlareSolverr API URL**:
+`http://flaresolverr:8191/` → **Apply Server Settings**. Cloudflared
+indexers will start returning results.
+
+#### Wiring Jackett into Sonarr/Radarr
+
+You have two URL choices:
+
+- **Aggregate feed** (recommended for simplicity):
+  `http://jackett:9117/api/v2.0/indexers/all/results/torznab`
+  All your indexers behind one Torznab endpoint. Add it once to Sonarr,
+  once to Radarr, and you're done. Drawback: a single slow indexer
+  delays the whole query.
+- **One Torznab feed per indexer** (recommended for tuning):
+  Click the **Copy Torznab Feed** button on each indexer's row in Jackett
+  and add each as a separate Torznab Custom indexer in Sonarr/Radarr.
+  Lets you set per-indexer priorities and disable underperformers
+  without touching Jackett.
+
+Either way the API key is the one the setup script printed (also visible
+top-right in the Jackett UI). The next step (4c) covers pasting these
+into Sonarr/Radarr.
+
+#### Why not Prowlarr?
+
+[Prowlarr](https://wiki.servarr.com/prowlarr) is Jackett's modern
+successor — it auto-syncs indexers into Sonarr/Radarr (no manual Torznab
+copy-paste). The dev.to article uses Jackett, so we follow suit. If
+you're starting fresh and don't have a reason to stick with Jackett,
+swap in Prowlarr; see the "Optional extras" section below.
 
 ### 4c. Sonarr (http://localhost:8989) and Radarr (http://localhost:7878)
 
@@ -566,6 +663,9 @@ Telegram**.
 | Docker Desktop hangs at "Starting"             | `wsl --update` in an elevated PowerShell, then restart Docker Desktop.                                |
 | `setup.ps1` blocked by execution policy        | `powershell -ExecutionPolicy Bypass -File .\setup.ps1`                                                |
 | Sonarr/Radarr can't reach Jackett or qBittorrent | Use the **service name** as the hostname (`jackett`, `qbittorrent`), not `localhost` or `127.0.0.1`. |
+| Jackett: indexer red, error "Cloudflare challenge" | Add the FlareSolverr container (see Jackett section), then in Jackett Settings set FlareSolverr API URL to `http://flaresolverr:8191/`. |
+| Jackett: "No results" but the tracker works in browser | Click the indexer row → **Manual Search** in Jackett to confirm. If it works there but not from Sonarr/Radarr, you probably pasted the wrong Torznab URL or used the host's hostname instead of `jackett`. |
+| Jackett: indexer was working, now red | Public trackers go down or change domains. Click the wrench, check for an updated URL; if there's no fix, disable the indexer and add an alternative. |
 | qBittorrent password doesn't work next restart | You must change the temp password in **Settings → Web UI**; otherwise a new one is generated.         |
 | Overseerr won't save Sonarr/Radarr connection  | Add at least one Root Folder + Quality Profile in Sonarr/Radarr first, then retry the Overseerr wizard. |
 | Sonarr error "Remote path mapping"             | qBittorrent and Sonarr both see `/downloads`, so no mapping is needed — make sure both root folders match. |
