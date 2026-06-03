@@ -141,7 +141,9 @@ CONFIG_ROOT=$ConfigRootDocker
 DOWNLOADS_ROOT=$DownloadsRootDocker
 MEDIA_ROOT=$MediaRootDocker
 "@
-Set-Content -LiteralPath $envPath -Value $envBody -Encoding UTF8
+# Use WriteAllText to guarantee BOM-less UTF-8 on both PS 5.1 and PS 7+.
+# (Docker Compose v2 handles BOMs, but other tools that read .env don't.)
+[System.IO.File]::WriteAllText($envPath, $envBody, [System.Text.UTF8Encoding]::new($false))
 Write-OK ".env written."
 
 # -----------------------------------------------------------------------------

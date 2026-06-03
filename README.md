@@ -22,38 +22,41 @@ in a single `setup.ps1` invocation.
 
 ---
 
-## 1. Install Docker Desktop
+## Prerequisites
+
+- **Windows 10/11 64-bit.** Pro, Home, and Enterprise all work.
+- **Virtualization enabled in BIOS/UEFI.** Look for "Intel VT-x", "AMD-V",
+  or "SVM" in your BIOS. This is the #1 reason Docker Desktop fails to
+  start. Verify with `systeminfo | findstr /i "hyper-v"` — all four lines
+  should say `Yes`.
+- **WSL 2.** Docker Desktop will offer to install it automatically. If you
+  hit problems, run `wsl --install` in an elevated PowerShell first.
+- **~20 GB free disk** for Docker images, plus however much you want for
+  your media library (this can — and should — be on a separate drive).
+- Admin rights for the initial installs (Docker, Plex). The setup script
+  itself does not need admin.
+
+---
+
+## 1. Install Docker Desktop and Plex
 
 ```powershell
 winget install Docker.DockerDesktop
-```
-
-Reboot if prompted, launch Docker Desktop once, and wait for the whale icon in
-the system tray to stop animating.
-
-## 2. Install Plex Media Server (native)
-
-The article installs Plex natively on Windows — keep doing that, it gives you
-the best hardware transcoding (Quick Sync / NVENC) and zero networking
-headaches.
-
-```powershell
 winget install Plex.PlexMediaServer
 ```
 
-When Plex asks for your library folders, point it at:
+Reboot if Docker prompts you. Launch Docker Desktop once, accept the
+service agreement, and wait for the whale icon in the system tray to
+stop animating before continuing. **Leave the Plex first-run wizard for
+step 3** — we need to create the media folders first.
 
-- **Movies** → `<MediaRoot>\movies`
-- **TV Shows** → `<MediaRoot>\tv`
+> **Tip:** Open **Docker Desktop → Settings → General** and tick *"Start
+> Docker Desktop when you log in"*. That, combined with the
+> `restart: unless-stopped` policy on every container, gives you a true
+> "boot the mini-PC and everything comes up" setup. Plex installs as a
+> Windows service and is already auto-start.
 
-…where `<MediaRoot>` is the folder you'll pass to `setup.ps1` below (defaults
-to `.\media` next to this README).
-
-> Prefer Plex in Docker? Uncomment the `plex:` service in
-> `docker-compose.yml`, set `PLEX_CLAIM` (get one at https://plex.tv/claim),
-> and re-run `docker compose up -d`.
-
-## 3. Run the setup script
+## 2. Run the setup script
 
 From PowerShell, in the folder containing this README:
 
@@ -76,7 +79,32 @@ The script will:
    - the auto-generated **API keys** for Jackett, Sonarr, and Radarr,
    - the in-container paths to use when configuring each app.
 
+**Keep the script's final output open in a window** — you'll paste those
+values into the web UIs in step 4. If you lose them, just re-run the
+script; it's idempotent and will reprint them.
+
 On Linux / macOS, use `./setup.sh` instead.
+
+## 3. Finish the Plex first-run wizard
+
+Now that the media folders exist, open Plex (it should already be running
+as a Windows service; if not, launch *Plex Media Server* from the Start
+menu and click the tray icon → *Open Plex*).
+
+1. Sign in with a Plex account (free).
+2. **Windows Defender Firewall will prompt for permission** — allow on
+   both private and public networks if you want LAN devices (phones, TVs)
+   to discover the server.
+3. Server name: anything; tick *"Allow me to access my media outside my home"*.
+4. **Add Library → Movies** → folder: `<MediaRoot>\movies`.
+5. **Add Library → TV Shows** → folder: `<MediaRoot>\tv`.
+6. Finish the wizard. Plex will be empty for now — files will appear once
+   Sonarr/Radarr download something in step 4.
+
+> Prefer Plex in Docker? Uncomment the `plex:` service in
+> `docker-compose.yml`, set `PLEX_CLAIM` (get one at https://plex.tv/claim,
+> valid for 4 minutes), and re-run `docker compose up -d`. You lose easy
+> hardware transcoding on Windows; not recommended.
 
 ---
 
@@ -86,58 +114,81 @@ The infrastructure is up, but four config screens still need linking. The
 setup script prints every value you need — keep its output handy. Each step
 below maps to a section of the original article, just much shorter.
 
-### qBittorrent (http://localhost:8080)
+> **Do these in the order below.** Each step depends on values produced
+> by the previous one (Jackett's API key feeds Sonarr/Radarr; Sonarr/Radarr
+> Root Folders must exist before Overseerr will accept them).
+
+### 4a. qBittorrent (http://localhost:8080)
 
 1. Log in as `admin` with the **temp password** the script printed.
-2. **Settings → Web UI** → set a real username and password. Apply.
-3. **Settings → Downloads**:
+2. **Tools → Options → Web UI** (or *Settings → Web UI* depending on theme):
+   - Set a real **username and password**. Click **Save**.
+   - **Important:** the LSIO image generates a new temp password on every
+     container restart **unless** you've changed it here. Write your
+     new password down now.
+3. **Tools → Options → Downloads**:
    - Default Save Path: `/downloads/complete`
    - Keep incomplete torrents in: `/downloads/incomplete`
    - Tick "Create subfolder for torrents with multiple files".
-4. **Settings → BitTorrent**: tick "Torrent Queueing" and "Seeding Limits"
+4. **Tools → Options → BitTorrent**: tick "Torrent Queueing" and "Seeding Limits"
    (e.g. ratio 1.0, then "Remove torrent").
+5. **Log out and log back in** with your new credentials to confirm they work.
 
 You can skip the WinRAR/rar-extract step from the article — qBittorrent
 runs inside the container, so there's no host-side rar binary to call.
 The *arr apps handle .rar imports for you.
 
-### Jackett (http://localhost:9117)
+### 4b. Jackett (http://localhost:9117)
 
-1. **Add indexer** → search for the trackers you use (e.g. 1337x, EZTV, RARBG-mirrors), click the wrench, save.
+1. **Add indexer** → search for the trackers you use (e.g. 1337x, EZTV,
+   Nyaa, RARBG-mirrors), click the wrench, save.
 2. The **API key** in the top-right is the same one the setup script printed.
-3. Copy the **"All" Torznab feed URL**:
+3. The unified Torznab feed you'll paste into Sonarr/Radarr next is:
    `http://jackett:9117/api/v2.0/indexers/all/results/torznab`
    Note: inside the Docker network use the hostname `jackett`, **not**
    `127.0.0.1`. Sonarr/Radarr talk to Jackett over the internal network.
 
-### Sonarr (http://localhost:8989) and Radarr (http://localhost:7878)
+### 4c. Sonarr (http://localhost:8989) and Radarr (http://localhost:7878)
 
 Both are configured identically — Radarr just stores movies instead of TV.
 
 1. **Settings → Indexers → +** → **Torznab → Custom**
    - URL: `http://jackett:9117/api/v2.0/indexers/all/results/torznab`
    - API Key: (the Jackett key the script printed)
-   - Categories: TV / Anime for Sonarr; Movies for Radarr.
+   - Categories: leave at defaults — Sonarr v4 / Radarr v5 filter
+     automatically based on what they're searching for.
+   - Click **Test**, then **Save**. A green tick means Jackett answered.
 2. **Settings → Download Clients → +** → **qBittorrent**
-   - Host: `qbittorrent`  (the service name, not localhost)
+   - Host: `qbittorrent`  (the service name, not localhost; or `gluetun` if
+     you set up the VPN — see [VPN](#vpn) below)
    - Port: `8080`
-   - Username / Password: whatever you set in qBittorrent above.
+   - Username / Password: the ones you set in qBittorrent above.
+   - Click **Test** → **Save**.
 3. **Settings → Media Management → Root Folders → +**
    - Sonarr: `/tv`
    - Radarr: `/movies`
    - Tick "Rename Episodes" / "Rename Movies".
-4. *(Optional)* **Settings → Connect → Plex Media Server** to auto-refresh
-   the Plex library when downloads finish. Host `host.docker.internal`
-   (Windows / Mac Docker Desktop) reaches your native Plex install.
+4. **Settings → Profiles** (Sonarr) / **Settings → Quality** (Radarr):
+   defaults are fine. If you want 1080p-only or 4K-only, edit the
+   "HD-1080p" / "Ultra-HD" profile and use that on new shows/movies.
+5. *(Optional)* **Settings → Connect → Plex Media Server** to auto-refresh
+   the Plex library when downloads finish. Host: `host.docker.internal`
+   (Windows / Mac Docker Desktop reaches your native Plex install through
+   this magic hostname). Port: `32400`. Click **Authenticate with Plex.tv**.
 
-### Overseerr (http://localhost:5055)
+Do **both Sonarr and Radarr** before moving to Overseerr — Overseerr's
+wizard won't accept them otherwise.
+
+### 4d. Overseerr (http://localhost:5055)
 
 The first-run wizard walks you through it:
 
 1. Sign in with your Plex account.
-2. Point at your Plex server (`host.docker.internal:32400` if Plex is native).
-3. Add Sonarr (`http://sonarr:8989`, API key from the script).
-4. Add Radarr (`http://radarr:7878`, API key from the script).
+2. Point at your Plex server. Host: `host.docker.internal`, Port: `32400`.
+3. Add Sonarr: `http://sonarr:8989`, API key from the script. After
+   Overseerr connects, it asks for a **Default Quality Profile** and
+   **Default Root Folder** — pick the ones you set up in step 4c.
+4. Same for Radarr: `http://radarr:7878`, then quality + root folder.
 
 Done. Friends and family can now request shows/movies from a Netflix-like UI
 and they'll appear in Plex automatically.
@@ -156,6 +207,16 @@ docker compose pull; docker compose up -d   # upgrade all images
 
 To uninstall completely: `docker compose down -v` and delete the `config/`,
 `downloads/`, and `media/` folders.
+
+### Backup
+
+The `config/` folder contains everything irreplaceable — API keys, indexer
+setups, your list of monitored shows, watch history. **Back it up.** Easy
+options:
+
+- Copy `config/` to OneDrive / Dropbox once a week.
+- Or, after `docker compose down`, zip `config/` and upload it.
+- The `media/` folder you can re-download; `downloads/` is throwaway.
 
 ---
 
@@ -327,11 +388,15 @@ Should print a NordVPN IP in your chosen country, **not** your home IP.
 
 | Problem                                        | Fix                                                                                                   |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Docker Desktop won't start (WSL / Hyper-V error) | Virtualization is disabled in BIOS. Reboot, enter BIOS, enable Intel VT-x / AMD-V (often called "SVM"). |
+| Docker Desktop hangs at "Starting"             | `wsl --update` in an elevated PowerShell, then restart Docker Desktop.                                |
 | `setup.ps1` blocked by execution policy        | `powershell -ExecutionPolicy Bypass -File .\setup.ps1`                                                |
 | Sonarr/Radarr can't reach Jackett or qBittorrent | Use the **service name** as the hostname (`jackett`, `qbittorrent`), not `localhost` or `127.0.0.1`. |
 | qBittorrent password doesn't work next restart | You must change the temp password in **Settings → Web UI**; otherwise a new one is generated.         |
+| Overseerr won't save Sonarr/Radarr connection  | Add at least one Root Folder + Quality Profile in Sonarr/Radarr first, then retry the Overseerr wizard. |
 | Sonarr error "Remote path mapping"             | qBittorrent and Sonarr both see `/downloads`, so no mapping is needed — make sure both root folders match. |
 | Plex doesn't see new files                     | In Plex: Library → Scan Library Files. Or wire **Sonarr/Radarr → Connect → Plex** to auto-refresh.    |
+| Plex unreachable from Sonarr/Radarr (Docker → native Plex) | Use host `host.docker.internal`, port `32400`. Allow Plex through Windows Firewall on private+public networks. |
 | **With VPN:** Sonarr can't reach qBittorrent   | Change Host to `gluetun` in Sonarr/Radarr → Download Clients (qBit's network is shared with gluetun). |
 | **With VPN:** containers can't reach anything  | Your LAN subnet probably isn't in `LAN_SUBNET`. Check with `ipconfig` (Windows) or `ip a` (Linux), then update `.env` and `docker compose restart gluetun`. |
 | **With VPN:** torrents stuck at 0 B/s          | Provider blocks P2P on this server. Change `VPN_COUNTRIES`/`VPN_CITIES` to a P2P-allowed region in `.env`. |
