@@ -236,6 +236,91 @@ negotiation automatically for these; check
 [the gluetun wiki](https://github.com/qdm12/gluetun-wiki/blob/main/setup/advanced/vpn-port-forwarding.md)
 for how to feed the forwarded port back into qBittorrent.
 
+NordVPN does **not** support port forwarding on any plan — fine for
+downloading, but you'll do passive seeding only. If a private tracker
+demands an active connection, you'd need to swap providers.
+
+### NordVPN walkthrough
+
+NordVPN supports both protocols. **OpenVPN is the easy path; WireGuard
+(NordLynx) is ~50% lower CPU and faster.** Start with OpenVPN, switch
+to WireGuard once it's working.
+
+#### NordVPN with OpenVPN (5 minutes)
+
+> These are **service credentials**, not your account email/password — Nord
+> generates a separate user/pass for manual setups.
+
+1. Log in to <https://my.nordaccount.com>.
+2. Left sidebar → **NordVPN** → **Set up NordVPN manually** → **Service credentials**
+   ([direct link](https://my.nordaccount.com/dashboard/nordvpn/manual-configuration/service-credentials/)).
+3. Copy the **Username** (long random string) and **Password** (click the eye to reveal).
+4. Put them in `.env`:
+   ```dotenv
+   VPN_SERVICE_PROVIDER=nordvpn
+   VPN_TYPE=openvpn
+   OPENVPN_USER=<service username>
+   OPENVPN_PASSWORD=<service password>
+   VPN_COUNTRIES=Switzerland
+   VPN_CATEGORIES=P2P
+   ```
+5. Run `.\setup.ps1 -Vpn`.
+
+#### NordVPN with WireGuard (NordLynx)
+
+NordVPN doesn't expose the WireGuard private key in the dashboard, so you
+extract it with a one-shot container.
+
+1. **Get an access token.** <https://my.nordaccount.com> → **NordVPN** →
+   **Set up NordVPN manually** → **Access tokens** → **Generate new token**
+   ([direct link](https://my.nordaccount.com/dashboard/nordvpn/access-tokens/)).
+   Copy the token immediately — it's shown only once.
+
+2. **Extract the WireGuard private key.** On your mini-PC, in PowerShell:
+   ```powershell
+   docker run --rm --cap-add=NET_ADMIN `
+     -e TOKEN='<paste-your-token-here>' `
+     ghcr.io/bubuntux/nordlynx:get_private_key
+   ```
+   After ~20 seconds it prints something like:
+   ```
+   ############################################################
+   IP: 10.5.0.2/32
+   Private Key: wOEI9rqqbDwnN8/Bpp22sVz48T71vJ4fYmFWujulwUU=
+   ############################################################
+   ```
+   > Known flakiness: sometimes prints "Connection failed" with an empty key
+   > ([issue](https://github.com/qdm12/gluetun-wiki/issues/15)). Just re-run
+   > it a couple of times.
+
+3. **Configure `.env`:**
+   ```dotenv
+   VPN_SERVICE_PROVIDER=nordvpn
+   VPN_TYPE=wireguard
+   WIREGUARD_PRIVATE_KEY=wOEI9rqqbDwnN8/Bpp22sVz48T71vJ4fYmFWujulwUU=
+   WIREGUARD_ADDRESSES=10.5.0.2/32
+   VPN_COUNTRIES=Switzerland
+   VPN_CATEGORIES=P2P
+   ```
+
+4. Run `.\setup.ps1 -Vpn`. You can delete the access token from your
+   NordVPN dashboard now — the WireGuard key is permanent (until you
+   regenerate it via the same process).
+
+#### Picking a country
+
+NordVPN allows P2P on most countries; for best speeds and tracker
+compatibility use: **Netherlands, Switzerland, Canada, Germany, Sweden,
+Finland**. Avoid US/UK/AU/NZ/India.
+
+#### Verifying
+
+```powershell
+docker exec gluetun wget -qO- https://ifconfig.me
+```
+
+Should print a NordVPN IP in your chosen country, **not** your home IP.
+
 ---
 
 ## Troubleshooting

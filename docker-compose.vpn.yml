@@ -50,6 +50,7 @@ services:
       - SERVER_COUNTRIES=${VPN_COUNTRIES:-}
       - SERVER_CITIES=${VPN_CITIES:-}
       - SERVER_REGIONS=${VPN_REGIONS:-}
+      - SERVER_CATEGORIES=${VPN_CATEGORIES:-}
 
       # --- DNS / firewall ---
       - DOT=on
