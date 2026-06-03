@@ -5,7 +5,7 @@ A drop-in, one-command Docker setup for the stack from
 
 | Service      | Purpose                              | URL                     |
 | ------------ | ------------------------------------ | ----------------------- |
-| Jackett      | Indexer proxy for torrent trackers   | http://localhost:9117   |
+| Prowlarr     | Indexer proxy for torrent trackers   | http://localhost:9696   |
 | qBittorrent  | Torrent download client              | http://localhost:8080   |
 | Sonarr       | TV-show automation                   | http://localhost:8989   |
 | Radarr       | Movie automation                     | http://localhost:7878   |
@@ -13,6 +13,13 @@ A drop-in, one-command Docker setup for the stack from
 | Plex         | Media server (installed natively)    | http://localhost:32400  |
 | Gluetun      | (optional) VPN for qBittorrent       | —                       |
 | Searcharr    | (optional) Telegram bot for requests | (Telegram chat)         |
+
+> The dev.to article uses **Jackett** as the indexer proxy. This stack uses
+> **Prowlarr** — Jackett's modern successor from the same *arr family —
+> because it auto-syncs indexers into Sonarr and Radarr instead of requiring
+> you to copy a Torznab URL into each app by hand. See [step 4b](#4b-prowlarr-httplocalhost9696)
+> for the why; see [Recommended add-ons](#recommended-add-ons) if you want
+> Jackett back.
 
 What the article asks you to do by hand — install six apps, create folders,
 remember which port is which, copy API keys between web UIs — this repo does
@@ -78,7 +85,7 @@ The script will:
 4. `docker compose pull && docker compose up -d`.
 5. Wait for every service to respond, then print:
    - the qBittorrent first-run **admin password** (extracted from container logs),
-   - the auto-generated **API keys** for Jackett, Sonarr, and Radarr,
+   - the auto-generated **API keys** for Prowlarr, Sonarr, and Radarr,
    - the in-container paths to use when configuring each app.
 
 **Keep the script's final output open in a window** — you'll paste those
@@ -117,7 +124,7 @@ setup script prints every value you need — keep its output handy. Each step
 below maps to a section of the original article, just much shorter.
 
 > **Do these in the order below.** Each step depends on values produced
-> by the previous one (Jackett's API key feeds Sonarr/Radarr; Sonarr/Radarr
+> by the previous one (Prowlarr pushes indexers into Sonarr/Radarr; Sonarr/Radarr
 > Root Folders must exist before Overseerr will accept them).
 
 ### 4a. qBittorrent (http://localhost:8080)
@@ -140,16 +147,30 @@ You can skip the WinRAR/rar-extract step from the article — qBittorrent
 runs inside the container, so there's no host-side rar binary to call.
 The *arr apps handle .rar imports for you.
 
-### 4b. Jackett (http://localhost:9117)
+### 4b. Prowlarr (http://localhost:9696)
 
-Jackett is a **proxy for torrent trackers** — it lets Sonarr/Radarr talk
-to ~500 different sites through one consistent API (Torznab). The
-container ships with **zero indexers configured**; you pick which trackers
-to enable.
+Prowlarr is a **proxy for torrent trackers** — it lets Sonarr/Radarr talk
+to ~500 different sites through one consistent API. Unlike Jackett (the
+older tool the dev.to article uses), Prowlarr **pushes** indexers into
+Sonarr/Radarr automatically: add a tracker once in Prowlarr, and it
+appears in both *arr apps within seconds, with the right Torznab URL,
+right API key, right categories. No per-app paste-the-URL dance.
+
+The container ships with **zero indexers configured**; you pick which
+trackers to enable.
+
+#### First-run wizard
+
+1. Open <http://localhost:9696>.
+2. Pick **Authentication Method: Forms (Login Page)** and set a
+   username/password. Click **Save**. (You'll log in once and the browser
+   remembers it.)
+3. The main dashboard appears. The API key is in **Settings → General**
+   (and the setup script already printed it).
 
 #### Pick your trackers
 
-There are two flavours of indexer in Jackett, and you'll likely want a
+There are two flavours of indexer in Prowlarr, and you'll likely want a
 mix of both:
 
 **Public trackers** — no signup, no credentials. Lower-quality releases on
@@ -169,40 +190,35 @@ keep the ones that return results):
 | TheRARBG / RARBG2  | Movies/TV (original RARBG died 2023; these are community mirrors of varying quality) |
 
 > The list of *working* public trackers is a moving target. If one
-> returns errors, disable it and try another. Check
-> [jackett-indexers GitHub Discussions](https://github.com/Jackett/Jackett/discussions/categories/indexers)
-> for current status.
+> returns errors, disable it and try another. Prowlarr's per-indexer
+> stats (next to each row) tell you who's actually delivering results.
 
 **Private trackers** — require an account (usually invite-only). Vastly
 better quality, retention, and seeding ratios, but you need an existing
-membership. Popular ones supported by Jackett: IPTorrents, TorrentLeech,
+membership. Popular ones supported by Prowlarr: IPTorrents, TorrentLeech,
 HDBits, BroadcasTheNet, PassThePopcorn, Redacted. You'll need your
 username/password (or for some, a session cookie or 2FA-token-aware login).
 
 #### Add an indexer (UX walkthrough)
 
-1. Open <http://localhost:9117>.
-2. Click **+ Add indexer** at the top.
-3. Use the filter box. For public trackers, type the name (e.g. `1337x`)
-   and click the **+** icon on the row.
+1. **Indexers → Add Indexer (+)**.
+2. Search/filter by name (e.g. `1337x`). Click the row.
+3. For public trackers, just hit **Test** then **Save**.
 4. For private trackers, fill in **Username / Password** (and any cookie
-   or 2FA field the form asks for).
-5. Click **Okay** — Jackett does a test query against the tracker.
-   - ✅ Green tick = working.
-   - ⚠ Yellow / ❌ Red = tracker down, captcha required, or credentials
-     wrong. Click the red row for details; the **Wrench icon** lets you
-     edit the config.
-6. Back on the main page, click **Test All** to confirm every enabled
-   indexer is still answering.
+   or 2FA field the form asks for) → **Test** → **Save**.
+5. Test result:
+   - ✅ Green tick = working, ready to use.
+   - ⚠ / ❌ = tracker down, captcha required, or credentials wrong.
+     The error message tells you which. Click the row to edit.
 
 #### Cloudflare-protected trackers: FlareSolverr
 
 Several private and some public trackers (e.g. some TorrentLeech mirrors,
 1337x at times) sit behind Cloudflare's "checking your browser" page,
-which blocks Jackett. The fix is **FlareSolverr** — a headless-browser
+which blocks Prowlarr. The fix is **FlareSolverr** — a headless-browser
 companion that solves the challenge.
 
-Add this to `docker-compose.yml` (uncommented, alongside Jackett):
+Add this to `docker-compose.yml` (uncommented, alongside Prowlarr):
 
 ```yaml
   flaresolverr:
@@ -216,47 +232,59 @@ Add this to `docker-compose.yml` (uncommented, alongside Jackett):
     restart: unless-stopped
 ```
 
-Then in Jackett → **gear icon (top right)** → **FlareSolverr API URL**:
-`http://flaresolverr:8191/` → **Apply Server Settings**. Cloudflared
-indexers will start returning results.
+Then in Prowlarr → **Settings → Indexers → Add Indexer Proxy → FlareSolverr**:
+- Name: `flaresolverr`
+- Host URL: `http://flaresolverr:8191/`
+- Tags: leave blank (applies to all indexers that need it)
 
-#### Wiring Jackett into Sonarr/Radarr
+Click **Test** → **Save**. Cloudflare-blocked indexers will start returning
+results on their next sync.
 
-You have two URL choices:
+#### Wire Prowlarr into Sonarr and Radarr (one-time, ~30 seconds)
 
-- **Aggregate feed** (recommended for simplicity):
-  `http://jackett:9117/api/v2.0/indexers/all/results/torznab`
-  All your indexers behind one Torznab endpoint. Add it once to Sonarr,
-  once to Radarr, and you're done. Drawback: a single slow indexer
-  delays the whole query.
-- **One Torznab feed per indexer** (recommended for tuning):
-  Click the **Copy Torznab Feed** button on each indexer's row in Jackett
-  and add each as a separate Torznab Custom indexer in Sonarr/Radarr.
-  Lets you set per-indexer priorities and disable underperformers
-  without touching Jackett.
+This is where Prowlarr earns its keep — you do this **once**, then every
+future indexer you add appears in both *arr apps automatically.
 
-Either way the API key is the one the setup script printed (also visible
-top-right in the Jackett UI). The next step (4c) covers pasting these
-into Sonarr/Radarr.
+1. **Settings → Apps → Add (+) → Sonarr**.
+   - Prowlarr Server: `http://prowlarr:9696` (leave default).
+   - Sonarr Server: `http://sonarr:8989`
+   - API Key: the Sonarr API key the setup script printed.
+   - Click **Test** → **Save**.
+2. **Settings → Apps → Add (+) → Radarr**.
+   - Prowlarr Server: `http://prowlarr:9696`
+   - Radarr Server: `http://radarr:7878`
+   - API Key: the Radarr API key the setup script printed.
+   - Click **Test** → **Save**.
 
-#### Why not Prowlarr?
+That's it. Prowlarr now sees Sonarr and Radarr as "Apps" and will push
+every configured indexer into them. If you add a new tracker tomorrow,
+it shows up in both Sonarr → Settings → Indexers and Radarr → Settings →
+Indexers within ~30 seconds — no manual action required.
 
-[Prowlarr](https://wiki.servarr.com/prowlarr) is Jackett's modern
-successor — it auto-syncs indexers into Sonarr/Radarr (no manual Torznab
-copy-paste). The dev.to article uses Jackett, so we follow suit. If
-you're starting fresh and don't have a reason to stick with Jackett,
-swap in Prowlarr; see the "Optional extras" section below.
+> Note the hostnames: from inside the Docker network, services reach
+> each other by service name (`sonarr`, `radarr`, `prowlarr`), **not**
+> `localhost` or `127.0.0.1`.
+
+#### Coming from Jackett?
+
+If you previously ran this stack with Jackett and have a list of
+indexers there, you'll need to re-add them in Prowlarr — credentials
+don't migrate between the two formats. The `config/jackett/` folder on
+your host is untouched, so if you change your mind you can revert this
+repo's commit and Jackett will come back with the same config.
 
 ### 4c. Sonarr (http://localhost:8989) and Radarr (http://localhost:7878)
 
 Both are configured identically — Radarr just stores movies instead of TV.
 
-1. **Settings → Indexers → +** → **Torznab → Custom**
-   - URL: `http://jackett:9117/api/v2.0/indexers/all/results/torznab`
-   - API Key: (the Jackett key the script printed)
-   - Categories: leave at defaults — Sonarr v4 / Radarr v5 filter
-     automatically based on what they're searching for.
-   - Click **Test**, then **Save**. A green tick means Jackett answered.
+> **Indexers are auto-added by Prowlarr** if you completed step 4b's
+> "Wire Prowlarr into Sonarr and Radarr" section. Skip step 1 below if
+> so — Settings → Indexers should already show what you set up in Prowlarr.
+
+1. *(Skip if Prowlarr is wired in)* **Settings → Indexers** should list
+   the indexers Prowlarr pushed. Click any one and **Test** to confirm
+   it answers. If you see nothing here, go back to Prowlarr → Settings →
+   Apps and click **Sync App Indexers** on the Sonarr/Radarr row.
 2. **Settings → Download Clients → +** → **qBittorrent**
    - Host: `qbittorrent`  (the service name, not localhost; or `gluetun` if
      you set up the VPN — see [VPN](#vpn) below)
@@ -321,7 +349,7 @@ options:
 
 ## Remote management (SSH)
 
-> **You'll need this.** The security hardening binds Sonarr, Radarr, Jackett
+> **You'll need this.** The security hardening binds Sonarr, Radarr, Prowlarr
 > and qBittorrent to `127.0.0.1` on the mini-PC — they're not reachable from
 > other LAN devices by design. If the mini-PC lives in a closet, this section
 > is how you reach those UIs from your Mac/laptop.
@@ -387,7 +415,7 @@ While that SSH session stays open, on your Mac:
 | --------------------- | ------------------------- |
 | http://localhost:8989 | Sonarr                    |
 | http://localhost:7878 | Radarr                    |
-| http://localhost:9117 | Jackett                   |
+| http://localhost:9696 | Prowlarr                  |
 | http://localhost:8080 | qBittorrent               |
 | http://localhost:5055 | Overseerr (also LAN-reachable directly) |
 | http://localhost:8000 | Gluetun control API (VPN only) |
@@ -417,7 +445,7 @@ Host miniserver
 ```
 
 Now you just type `ssh miniserver` and every UI is available on your Mac.
-Open the URLs above in your browser; configure Sonarr, add Jackett indexers,
+Open the URLs above in your browser; configure Sonarr, add Prowlarr indexers,
 manage qBittorrent — all over an encrypted tunnel.
 
 ### 5. Don't accidentally lock yourself out
@@ -465,11 +493,13 @@ connect with macOS Finder → `⌘K` → `vnc://192.168.1.42`.
 ## Recommended add-ons
 
 - **VPN** — see [VPN](#vpn) below. Strongly recommended for torrent traffic.
-- **Prowlarr** instead of Jackett — modern replacement that *auto-syncs*
-  indexers to Sonarr/Radarr, eliminating the manual Torznab dance entirely.
-  Image: `lscr.io/linuxserver/prowlarr:latest` on port `9696`.
 - **Bazarr** for automatic subtitles
   (`lscr.io/linuxserver/bazarr:latest`, port `6767`).
+- **Jackett** if you'd rather use it instead of Prowlarr (the dev.to
+  article's original choice). Image: `lscr.io/linuxserver/jackett:latest`
+  on port `9117`. You'd lose Prowlarr's auto-sync to Sonarr/Radarr; the
+  earlier git history of this repo has a working Jackett configuration
+  if you want to cherry-pick it back.
 
 ---
 
@@ -477,7 +507,7 @@ connect with macOS Finder → `⌘K` → `vnc://192.168.1.42`.
 
 Routing torrent traffic through a VPN is strongly recommended. This repo
 ships a Gluetun-based override that routes **only qBittorrent** through the
-VPN, leaving Sonarr/Radarr/Jackett/Overseerr on your LAN. That keeps:
+VPN, leaving Sonarr/Radarr/Prowlarr/Overseerr on your LAN. That keeps:
 
 - indexer queries and TMDB/TVDB lookups fast and unblocked,
 - the web UIs reachable at their normal `localhost:*` ports,
@@ -805,11 +835,11 @@ Telegram**.
 | Docker Desktop won't start (WSL / Hyper-V error) | Virtualization is disabled in BIOS. Reboot, enter BIOS, enable Intel VT-x / AMD-V (often called "SVM"). |
 | Docker Desktop hangs at "Starting"             | `wsl --update` in an elevated PowerShell, then restart Docker Desktop.                                |
 | `setup.ps1` blocked by execution policy        | `powershell -ExecutionPolicy Bypass -File .\setup.ps1`                                                |
-| Sonarr/Radarr can't reach Jackett or qBittorrent | Use the **service name** as the hostname (`jackett`, `qbittorrent`), not `localhost` or `127.0.0.1`. |
-| Can't reach Sonarr/Radarr/Jackett/qBittorrent from another LAN device | By design — admin UIs are bound to `127.0.0.1` on the mini-PC. Use the SSH tunnel pattern in [Remote management](#remote-management-ssh). |
-| Jackett: indexer red, error "Cloudflare challenge" | Add the FlareSolverr container (see Jackett section), then in Jackett Settings set FlareSolverr API URL to `http://flaresolverr:8191/`. |
-| Jackett: "No results" but the tracker works in browser | Click the indexer row → **Manual Search** in Jackett to confirm. If it works there but not from Sonarr/Radarr, you probably pasted the wrong Torznab URL or used the host's hostname instead of `jackett`. |
-| Jackett: indexer was working, now red | Public trackers go down or change domains. Click the wrench, check for an updated URL; if there's no fix, disable the indexer and add an alternative. |
+| Sonarr/Radarr can't reach Prowlarr or qBittorrent | Use the **service name** as the hostname (`prowlarr`, `qbittorrent`), not `localhost` or `127.0.0.1`. |
+| Can't reach Sonarr/Radarr/Prowlarr/qBittorrent from another LAN device | By design — admin UIs are bound to `127.0.0.1` on the mini-PC. Use the SSH tunnel pattern in [Remote management](#remote-management-ssh). |
+| Prowlarr: indexer red, error "Cloudflare challenge" | Add the FlareSolverr container (see Prowlarr section), then in Prowlarr → Settings → Indexers → Add Indexer Proxy → FlareSolverr with host `http://flaresolverr:8191/`. |
+| Prowlarr: added an indexer but Sonarr/Radarr don't see it | Prowlarr → Settings → Apps → click the Sonarr/Radarr row → **Sync App Indexers** (or wait ~30 s for the next auto-sync). If still nothing, Test the connection and re-check the *arr API key. |
+| Prowlarr: indexer was working, now red | Public trackers go down or change domains. Edit the indexer row, check for an updated URL; if there's no fix, disable the indexer and add an alternative. |
 | qBittorrent password doesn't work next restart | You must change the temp password in **Settings → Web UI**; otherwise a new one is generated.         |
 | Overseerr won't save Sonarr/Radarr connection  | Add at least one Root Folder + Quality Profile in Sonarr/Radarr first, then retry the Overseerr wizard. |
 | Sonarr error "Remote path mapping"             | qBittorrent and Sonarr both see `/downloads`, so no mapping is needed — make sure both root folders match. |

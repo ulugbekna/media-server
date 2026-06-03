@@ -52,7 +52,7 @@ TZ_VALUE="${TZ:-$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||' |
 
 mkdir -p "$MEDIA_ROOT"/{movies,tv}
 mkdir -p "$DOWNLOADS_ROOT"/{complete,incomplete}
-mkdir -p "$CONFIG_ROOT"/{jackett,qbittorrent,sonarr,radarr,overseerr}
+mkdir -p "$CONFIG_ROOT"/{prowlarr,qbittorrent,sonarr,radarr,overseerr}
 mkdir -p "$CONFIG_ROOT"/searcharr/{data,logs}
 
 green "Media:     $MEDIA_ROOT"
@@ -153,7 +153,7 @@ wait_for_url() {
 }
 
 cyan "Waiting for services to come up"
-wait_for_url "Jackett"     "http://localhost:9117" || true
+wait_for_url "Prowlarr"    "http://localhost:9696" || true
 wait_for_url "qBittorrent" "http://localhost:8080" || true
 wait_for_url "Sonarr"      "http://localhost:8989" || true
 wait_for_url "Radarr"      "http://localhost:7878" || true
@@ -169,15 +169,10 @@ extract_arr_key() {
     [ -f "$file" ] || return 0
     grep -oE '<ApiKey>[^<]+</ApiKey>' "$file" | head -n1 | sed -E 's|</?ApiKey>||g'
 }
-extract_jackett_key() {
-    local file="$1"
-    [ -f "$file" ] || return 0
-    grep -oE '"APIKey"[^,]*' "$file" | head -n1 | sed 's/.*"APIKey":[[:space:]]*"\([^"]*\)".*/\1/'
-}
 
 sonarr_key="$(extract_arr_key  "$CONFIG_ROOT/sonarr/config.xml")"
 radarr_key="$(extract_arr_key  "$CONFIG_ROOT/radarr/config.xml")"
-jackett_key="$(extract_jackett_key "$CONFIG_ROOT/jackett/Jackett/ServerConfig.json")"
+prowlarr_key="$(extract_arr_key "$CONFIG_ROOT/prowlarr/config.xml")"
 
 # 6b. Telegram bot — generate settings.py and start Searcharr ----------------
 if [ "$USE_TELEGRAM" = "1" ]; then
@@ -222,7 +217,7 @@ cat <<EOF
  Media server is up. Open these in your browser:
 ============================================================
 
-  Jackett      http://localhost:9117
+  Prowlarr     http://localhost:9696
   qBittorrent  http://localhost:8080
   Sonarr       http://localhost:8989
   Radarr       http://localhost:7878
@@ -238,9 +233,9 @@ else
     yellow "Could not find qBittorrent temp password. Run:"
     echo   "      docker logs qbittorrent | grep -i 'temporary password'"
 fi
-[ -n "$jackett_key" ] && echo "  Jackett  API key: $jackett_key"
-[ -n "$sonarr_key"  ] && echo "  Sonarr   API key: $sonarr_key"
-[ -n "$radarr_key"  ] && echo "  Radarr   API key: $radarr_key"
+[ -n "$prowlarr_key" ] && echo "  Prowlarr API key: $prowlarr_key"
+[ -n "$sonarr_key"   ] && echo "  Sonarr   API key: $sonarr_key"
+[ -n "$radarr_key"   ] && echo "  Radarr   API key: $radarr_key"
 if [ "$USE_TELEGRAM" = "1" ] && [ -n "${tg_pw:-}" ]; then
     echo ""
     echo "  Telegram bot password:        $tg_pw"

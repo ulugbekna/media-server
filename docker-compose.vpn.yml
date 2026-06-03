@@ -2,7 +2,7 @@
 # VPN override for the media server stack.
 #
 # Adds a Gluetun container that runs a VPN client, and routes qBittorrent
-# through it. Sonarr, Radarr, Jackett and Overseerr keep their normal LAN
+# through it. Sonarr, Radarr, Prowlarr and Overseerr keep their normal LAN
 # access (so indexer lookups and metadata fetches aren't tunneled).
 #
 # Usage:

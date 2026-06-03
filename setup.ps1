@@ -123,7 +123,7 @@ $folders = @(
     "$MediaRoot\tv",
     "$DownloadsRoot\complete",
     "$DownloadsRoot\incomplete",
-    "$ConfigRoot\jackett",
+    "$ConfigRoot\prowlarr",
     "$ConfigRoot\qbittorrent",
     "$ConfigRoot\sonarr",
     "$ConfigRoot\radarr",
@@ -261,7 +261,7 @@ function Wait-ForUrl($name, $url, $timeoutSec = 90) {
 
 Write-Step "Waiting for services to come up"
 $services = @(
-    @{ name = "Jackett";     url = "http://localhost:9117" },
+    @{ name = "Prowlarr";    url = "http://localhost:9696" },
     @{ name = "qBittorrent"; url = "http://localhost:8080" },
     @{ name = "Sonarr";      url = "http://localhost:8989" },
     @{ name = "Radarr";      url = "http://localhost:7878" },
@@ -293,21 +293,13 @@ function Get-ArrApiKey($configFile) {
     } catch { return $null }
 }
 
-function Get-JackettApiKey($configFile) {
-    if (-not (Test-Path -LiteralPath $configFile)) { return $null }
-    try {
-        $j = Get-Content -LiteralPath $configFile -Raw | ConvertFrom-Json
-        return $j.APIKey
-    } catch { return $null }
-}
-
-# Give Sonarr/Radarr/Jackett a few extra seconds to write their config files.
+# Give Sonarr/Radarr/Prowlarr a few extra seconds to write their config files.
 Start-Sleep -Seconds 5
 
 $qbtPass     = Get-QbtTempPassword
 $sonarrKey   = Get-ArrApiKey  (Join-Path $ConfigRoot "sonarr\config.xml")
 $radarrKey   = Get-ArrApiKey  (Join-Path $ConfigRoot "radarr\config.xml")
-$jackettKey  = Get-JackettApiKey (Join-Path $ConfigRoot "jackett\Jackett\ServerConfig.json")
+$prowlarrKey = Get-ArrApiKey  (Join-Path $ConfigRoot "prowlarr\config.xml")
 
 # -----------------------------------------------------------------------------
 # 7b. Telegram bot — generate Searcharr settings.py and start the container
@@ -371,7 +363,7 @@ Write-Host "============================================================" -Foreg
 Write-Host " Media server is up. Open these in your browser:" -ForegroundColor Magenta
 Write-Host "============================================================" -ForegroundColor Magenta
 Write-Host ""
-Write-Host "  Jackett      http://localhost:9117"
+Write-Host "  Prowlarr     http://localhost:9696"
 Write-Host "  qBittorrent  http://localhost:8080"
 Write-Host "  Sonarr       http://localhost:8989"
 Write-Host "  Radarr       http://localhost:7878"
@@ -392,9 +384,9 @@ if ($qbtPass) {
     Write-WarnMsg "Could not find qBittorrent temp password. Run:"
     Write-Host    "      docker logs qbittorrent | findstr /i ""temporary password"""
 }
-if ($jackettKey) { Write-Host "  Jackett  API key: $jackettKey" }
-if ($sonarrKey)  { Write-Host "  Sonarr   API key: $sonarrKey" }
-if ($radarrKey)  { Write-Host "  Radarr   API key: $radarrKey" }
+if ($prowlarrKey) { Write-Host "  Prowlarr API key: $prowlarrKey" }
+if ($sonarrKey)   { Write-Host "  Sonarr   API key: $sonarrKey" }
+if ($radarrKey)   { Write-Host "  Radarr   API key: $radarrKey" }
 if ($Telegram -and $telegramBotPassword) {
     Write-Host ""
     Write-Host "  Telegram bot password:        $telegramBotPassword"

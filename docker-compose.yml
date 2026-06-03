@@ -2,11 +2,15 @@
 # Home Media Server stack
 #
 # Brings up the *arr stack from the dev.to article in a single command:
-#   - Jackett     (indexer proxy)       http://localhost:9117
+#   - Prowlarr    (indexer proxy)       http://localhost:9696
 #   - qBittorrent (torrent client)      http://localhost:8080
 #   - Sonarr      (TV automation)       http://localhost:8989
 #   - Radarr      (Movie automation)    http://localhost:7878
 #   - Overseerr   (request UI)          http://localhost:5055
+#
+# (The dev.to article uses Jackett; we use Prowlarr — Jackett's modern
+# successor from the same *arr family — because it auto-syncs indexers
+# into Sonarr/Radarr instead of requiring per-app Torznab paste.)
 #
 # Plex is intentionally NOT included by default; the recommended install on
 # Windows is the native Plex Media Server (better HW transcoding, easier
@@ -19,24 +23,21 @@
 # =============================================================================
 
 services:
-  jackett:
+  prowlarr:
     # Pin to a specific digest to prevent unexpected upstream changes.
-    # To upgrade: run `docker pull lscr.io/linuxserver/jackett:latest`,
+    # To upgrade: run `docker pull lscr.io/linuxserver/prowlarr:latest`,
     # inspect the new digest with `docker inspect`, and update this line.
-    image: lscr.io/linuxserver/jackett@sha256:b4f4360a2e88649f2104804494a63cdfa7bec4507f2477d965ebecdc29b1b8c0
-    container_name: jackett
+    image: lscr.io/linuxserver/prowlarr@sha256:2489c6dbaf11e3a6d71aeb2e6980d04193d4af611aa7064a974851222fd41722
+    container_name: prowlarr
     environment:
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
       - TZ=${TZ:-UTC}
-      # AUTO_UPDATE omitted intentionally — self-patching bypasses image-level
-      # supply-chain controls. Upgrade by pulling a new pinned image digest.
     volumes:
-      - ${CONFIG_ROOT}/jackett:/config
-      - ${DOWNLOADS_ROOT}:/downloads
+      - ${CONFIG_ROOT}/prowlarr:/config
     ports:
       # Bind to loopback — this admin UI should only be reachable from localhost.
-      - "127.0.0.1:9117:9117"
+      - "127.0.0.1:9696:9696"
     restart: unless-stopped
 
   qbittorrent:
@@ -74,7 +75,7 @@ services:
       - "127.0.0.1:8989:8989"
     restart: unless-stopped
     depends_on:
-      - jackett
+      - prowlarr
       - qbittorrent
 
   radarr:
@@ -92,7 +93,7 @@ services:
       - "127.0.0.1:7878:7878"
     restart: unless-stopped
     depends_on:
-      - jackett
+      - prowlarr
       - qbittorrent
 
   overseerr:
