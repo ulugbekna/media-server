@@ -32,6 +32,34 @@ in a single `setup.ps1` invocation.
 
 ---
 
+## Table of contents
+
+- [Prerequisites](#prerequisites)
+- [1. Install Docker Desktop and Plex](#1-install-docker-desktop-and-plex)
+- [2. Run the setup script](#2-run-the-setup-script)
+- [3. Finish the Plex first-run wizard](#3-finish-the-plex-first-run-wizard)
+- [4. Wire the services together](#4-wire-the-services-together)
+  - [4a. qBittorrent](#4a-qbittorrent-httplocalhost8080)
+  - [4b. Prowlarr](#4b-prowlarr-httplocalhost9696) — picking trackers, FlareSolverr, Sonarr/Radarr auto-sync
+  - [4c. Sonarr and Radarr](#4c-sonarr-httplocalhost8989-and-radarr-httplocalhost7878)
+  - [4d. Bazarr](#4d-bazarr-httplocalhost6767) — automatic subtitles
+  - [4e. Overseerr](#4e-overseerr-httplocalhost5055) — Netflix-style request UI
+- [Day-to-day commands](#day-to-day-commands)
+  - [Update flow (end-to-end)](#update-flow-end-to-end)
+  - [Upgrading (with 7-day quarantine)](#upgrading-with-7-day-quarantine)
+  - [Update notifications (optional, via Diun)](#update-notifications-optional-via-diun)
+  - [Backup](#backup)
+  - [Disk space (hardlinks)](#disk-space-hardlinks)
+- [Remote management (SSH)](#remote-management-ssh) — manage the closeted mini-PC from your Mac
+- [Reverse proxy (Caddy) — friendly HTTPS hostnames](#reverse-proxy-caddy--friendly-https-hostnames)
+- [Recommended add-ons](#recommended-add-ons)
+- [VPN](#vpn) — Gluetun for qBittorrent, NordVPN walkthrough
+- [TRaSH-Guides quality profiles (optional, via Recyclarr)](#trash-guides-quality-profiles-optional-via-recyclarr)
+- [Telegram requests](#telegram-requests) — Searcharr bot for /movie and /series
+- [Troubleshooting](#troubleshooting)
+
+---
+
 ## Prerequisites
 
 - **Windows 10/11 64-bit.** Pro, Home, and Enterprise all work.
@@ -600,16 +628,6 @@ on a slower spinning disk, you have two options:
   whatever you're seeding. The TRaSH Guides have a
   [hardlinks guide](https://trash-guides.info/Hardlinks/Hardlinks-and-Instant-Moves/)
   with all the caveats.
-
----
-
-### Reverse proxy (Caddy) — friendly HTTPS hostnames
-
-Six SSH `-L` flags is fine; one `-L` plus URLs that read like
-`https://sonarr.miniserver.local` is nicer. **See the [Reverse proxy
-(Caddy)](#reverse-proxy-caddy--friendly-https-hostnames) section below**
-for the optional Caddy override that adds HTTPS hostnames over a single
-SSH tunnel.
 
 ---
 
