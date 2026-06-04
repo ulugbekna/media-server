@@ -151,6 +151,31 @@ menu and click the tray icon → *Open Plex*).
 
 ## 4. Wire the services together
 
+> **✅ On a fresh install, most of this section is done automatically**
+> by the setup script's bootstrap step. It uses the REST APIs of
+> qBittorrent, Prowlarr, Sonarr, and Radarr to:
+>
+> - rotate qBittorrent's temp password to a stable random one
+>   (printed in the setup summary), set its download paths, create
+>   `tv` + `movies` categories
+> - register Sonarr + Radarr as Apps in Prowlarr (so any indexer you
+>   add later auto-syncs to both)
+> - add qBittorrent as a download client in Sonarr + Radarr (with the
+>   right host: `qbittorrent`, or `gluetun` if you used `--vpn`)
+> - add `/data/media/tv` and `/data/media/movies` as root folders
+>
+> What's still **manual** (because they need your input, your account,
+> or your taste):
+>
+> - **Adding indexers** in Prowlarr — see [step 4b](#4b-prowlarr-httplocalhost9696) (you pick which trackers)
+> - **Bazarr** providers and language profile — see [step 4d](#4d-bazarr-httplocalhost6767) (your OpenSubtitles.com account)
+> - **Overseerr** first-run wizard — see [step 4e](#4e-overseerr-httplocalhost5055) (Plex OAuth is browser-only)
+> - Sonarr/Radarr quality profiles — covered by [Recyclarr](#trash-guides-quality-profiles-optional-via-recyclarr) if you ran `--recyclarr`
+>
+> Pass `--no-bootstrap` to `setup.sh` (or `-NoBootstrap` to `setup.ps1`)
+> if you'd rather do everything below by hand in the web UIs. Each step
+> below has the manual instructions for that case.
+
 The infrastructure is up, but four config screens still need linking. The
 setup script prints every value you need — keep its output handy. Each step
 below maps to a section of the original article, just much shorter.
@@ -160,6 +185,20 @@ below maps to a section of the original article, just much shorter.
 > Root Folders must exist before Overseerr will accept them).
 
 ### 4a. qBittorrent (http://localhost:8080)
+
+> **✅ Auto-configured by bootstrap** (the script does this for you on a
+> fresh install). It sets a strong random admin password, sets the
+> download paths to `/data/torrents/...`, and creates `tv` + `movies`
+> categories. The new password is shown in the setup script's summary
+> output. You can skip this whole section unless you ran `--no-bootstrap`
+> or want to tweak something.
+>
+> The only thing you might still want to do manually:
+> **Tools → Options → BitTorrent** → tick "Torrent Queueing" and
+> "Seeding Limits" (e.g. ratio 1.0, then "Remove torrent") to keep
+> seeded torrents from accumulating forever.
+
+If you opted out of bootstrap (`--no-bootstrap`), do it by hand:
 
 1. Log in as `admin` with the **temp password** the script printed.
 2. **Tools → Options → Web UI** (or *Settings → Web UI* depending on theme):
@@ -277,8 +316,15 @@ results on their next sync.
 
 #### Wire Prowlarr into Sonarr and Radarr (one-time, ~30 seconds)
 
-This is where Prowlarr earns its keep — you do this **once**, then every
-future indexer you add appears in both *arr apps automatically.
+> **✅ Auto-configured by bootstrap.** On a fresh install the setup
+> script registers both apps for you via Prowlarr's REST API. Verify by
+> opening Prowlarr → **Settings → Apps** — you should see Sonarr and
+> Radarr listed with a green ✓. Skip the manual steps below.
+
+If you opted out of bootstrap (`--no-bootstrap`) or are adding Prowlarr
+to an existing stack, do it by hand. This is where Prowlarr earns its
+keep — you do this **once**, then every future indexer you add appears
+in both *arr apps automatically.
 
 1. **Settings → Apps → Add (+) → Sonarr**.
    - Prowlarr Server: `http://prowlarr:9696` (leave default).
@@ -312,9 +358,16 @@ repo's commit and Jackett will come back with the same config.
 
 Both are configured identically — Radarr just stores movies instead of TV.
 
-> **Indexers are auto-added by Prowlarr** if you completed step 4b's
-> "Wire Prowlarr into Sonarr and Radarr" section. Skip step 1 below if
-> so — Settings → Indexers should already show what you set up in Prowlarr.
+> **✅ Auto-configured by bootstrap.** On a fresh install the setup
+> script does steps 1, 2, and 3 below for you via Sonarr/Radarr's REST
+> APIs. The indexers, qBittorrent download client (with `tv`/`movies`
+> categories), and `/data/media/tv` + `/data/media/movies` root folders
+> will all be in place when you first open the UI. Verify:
+> Settings → Indexers, Settings → Download Clients, Settings → Media
+> Management → Root Folders. Then skip to step 4 (quality profiles) and
+> step 5 (Plex Connect) — those are your decisions.
+
+If you opted out of bootstrap, do them by hand:
 
 1. *(Skip if Prowlarr is wired in)* **Settings → Indexers** should list
    the indexers Prowlarr pushed. Click any one and **Test** to confirm

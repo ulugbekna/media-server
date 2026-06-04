@@ -11,18 +11,27 @@ USE_VPN=0
 USE_TELEGRAM=0
 USE_RECYCLARR=0
 USE_PROXY=0
+# Bootstrap: auto-configure qBittorrent + Prowlarr Apps + Sonarr/Radarr download
+# client/root folder via REST APIs. Default: AUTO (run only on fresh installs
+# where config/sonarr/config.xml is freshly written, so we don't disturb a
+# stack you've already hand-tweaked).
+BOOTSTRAP=auto
 for arg in "$@"; do
     case "$arg" in
         --vpn) USE_VPN=1 ;;
         --telegram) USE_TELEGRAM=1 ;;
         --recyclarr) USE_RECYCLARR=1 ;;
         --proxy) USE_PROXY=1 ;;
+        --bootstrap)    BOOTSTRAP=force ;;
+        --no-bootstrap) BOOTSTRAP=skip ;;
         -h|--help)
-            echo "Usage: $0 [--vpn] [--telegram] [--recyclarr] [--proxy]"
-            echo "  --vpn        Route qBittorrent through Gluetun (fill VPN_* in .env first)"
-            echo "  --telegram   Run Searcharr (fill TELEGRAM_BOT_TOKEN in .env first)"
-            echo "  --recyclarr  Apply TRaSH-Guides quality profiles to Sonarr/Radarr"
-            echo "  --proxy      Run Caddy as a reverse proxy for all web UIs over HTTPS"
+            echo "Usage: $0 [--vpn] [--telegram] [--recyclarr] [--proxy] [--bootstrap|--no-bootstrap]"
+            echo "  --vpn          Route qBittorrent through Gluetun (fill VPN_* in .env first)"
+            echo "  --telegram     Run Searcharr (fill TELEGRAM_BOT_TOKEN in .env first)"
+            echo "  --recyclarr    Apply TRaSH-Guides quality profiles to Sonarr/Radarr"
+            echo "  --proxy        Run Caddy as a reverse proxy for all web UIs over HTTPS"
+            echo "  --bootstrap    Force REST-API config of qBit/Prowlarr/Sonarr/Radarr (default: only on fresh install)"
+            echo "  --no-bootstrap Skip REST-API config even on fresh install (leave everything for the web UIs)"
             exit 0 ;;
     esac
 done
@@ -100,12 +109,28 @@ fi
 green "Hardlinks: torrents and media share one filesystem ($torrents_dev)"
 
 # --- Port conflicts ---
-# Detect anything already listening on a port we're about to publish.
+# Detect anything already listening on a port we're about to publish — but
+# ignore ports already held by *our* stack (running container), so re-runs
+# with new flags don't trip on themselves.
 check_port() {
     local port="$1" service="$2"
     # -iTCP:<port> + -sTCP:LISTEN restricts to TCP listeners only (LSOF will
     # otherwise list UDP traffic matching the port, e.g. MS Teams on 443).
     if command -v lsof >/dev/null 2>&1 && lsof -iTCP:"$port" -sTCP:LISTEN -n -P >/dev/null 2>&1; then
+        # If Docker is the one holding it AND a container of ours is publishing
+        # exactly this port, treat it as "ours" — re-run with a new flag should
+        # not abort.
+        local owner_cmd
+        owner_cmd=$(lsof -iTCP:"$port" -sTCP:LISTEN -n -P 2>/dev/null | awk 'NR==2 {print $1}')
+        if [ "$owner_cmd" = "com.docke" ] || [ "$owner_cmd" = "docker-pr" ] || [ "$owner_cmd" = "dockerd" ]; then
+            local ours
+            ours=$(docker ps --format '{{.Ports}}' 2>/dev/null \
+                   | grep -E "(^|,)[^,]*:${port}->" || true)
+            if [ -n "$ours" ]; then
+                green "Port $port: already held by a running container in this stack (re-run safe)"
+                return 0
+            fi
+        fi
         red "Port $port (needed for $service) is already in use:"
         lsof -iTCP:"$port" -sTCP:LISTEN -n -P | tail -n +1 | head -3 | sed 's/^/        /'
         return 1
@@ -274,6 +299,246 @@ sonarr_key="$(extract_arr_key  "$CONFIG_ROOT/sonarr/config.xml")"
 radarr_key="$(extract_arr_key  "$CONFIG_ROOT/radarr/config.xml")"
 prowlarr_key="$(extract_arr_key "$CONFIG_ROOT/prowlarr/config.xml")"
 
+# 6a. Bootstrap — REST-API auto-config so step 4 of README is mostly already done
+# ----------------------------------------------------------------------------
+# Eliminates ~15 minutes of UI clicking after first boot:
+#   - qBittorrent: change temp password to a stable one, set categories
+#                  (paths already set via WEBUI_PORT env; nothing to do there)
+#   - Prowlarr:    register Sonarr + Radarr as Apps (so Prowlarr auto-syncs
+#                  indexers into them — eliminates the manual "Apps → Add"
+#                  step in README 4b)
+#   - Sonarr & Radarr: add qBittorrent as download client, add root folder
+#                      under /data/media/ (eliminates README 4c steps 2 + 3)
+# Idempotent: each step GETs first and skips if already configured.
+# Honest scope: we DO NOT add indexers (you pick), DO NOT touch Bazarr
+# (provider creds are your account), DO NOT touch Overseerr (Plex OAuth
+# requires a browser).
+
+run_bootstrap=0
+case "$BOOTSTRAP" in
+    force) run_bootstrap=1 ;;
+    skip)  run_bootstrap=0 ;;
+    auto)
+        # "fresh install" heuristic: Sonarr's config.xml was just written
+        # in the last 5 minutes (since the API key extraction we just did
+        # implies Sonarr only just booted, an existing Sonarr install will
+        # have a much older config.xml mtime).
+        if [ -f "$CONFIG_ROOT/sonarr/config.xml" ]; then
+            cfg_age=$(( $(date +%s) - $(stat -f %m "$CONFIG_ROOT/sonarr/config.xml" 2>/dev/null \
+                                       || stat -c %Y "$CONFIG_ROOT/sonarr/config.xml") ))
+            [ "$cfg_age" -lt 300 ] && run_bootstrap=1
+        fi
+        ;;
+esac
+
+# Variables set by bootstrap and read later in the summary output.
+qbit_new_pw=""
+
+if [ "$run_bootstrap" = "1" ]; then
+    cyan "Bootstrap: auto-configuring qBittorrent, Prowlarr, Sonarr, Radarr via REST API"
+    if [ -z "$sonarr_key" ] || [ -z "$radarr_key" ] || [ -z "$prowlarr_key" ]; then
+        yellow "Skipping bootstrap: not all API keys are available yet."
+        yellow "Re-run with --bootstrap once Sonarr/Radarr/Prowlarr have finished initialising."
+    else
+        # --- 6a.1 qBittorrent ----------------------------------------------
+        # Extract temp pw from logs (same as the summary step further down).
+        qbit_temp_pw=$(docker logs qbittorrent 2>&1 \
+            | grep -oE 'temporary password[^:]*:[[:space:]]*[^[:space:]]+' \
+            | tail -n1 | awk -F: '{print $NF}' | tr -d ' ' || true)
+
+        # Strong random password unless user supplied one in .env.
+        qbit_new_pw="${QBIT_ADMIN_PASSWORD:-}"
+        if [ -z "$qbit_new_pw" ]; then
+            qbit_new_pw=$(openssl rand -base64 24 2>/dev/null \
+                          | tr -d '/+=' | cut -c1-20 \
+                          || head -c 32 /dev/urandom | base64 | tr -d '/+=' | cut -c1-20)
+        fi
+
+        if [ -n "$qbit_temp_pw" ]; then
+            # Login with temp pw, save cookie jar.
+            qbit_jar=$(mktemp)
+            if curl -fsS -c "$qbit_jar" -o /dev/null \
+                --data-urlencode "username=admin" \
+                --data-urlencode "password=$qbit_temp_pw" \
+                http://localhost:8080/api/v2/auth/login 2>/dev/null; then
+                # qBit's setPreferences takes 'json=<encoded>'. Build payload
+                # with python so embedded quotes don't break.
+                qbit_payload=$(python3 - <<PY
+import json
+print('json=' + json.dumps({
+  "save_path": "/data/torrents/complete",
+  "temp_path": "/data/torrents/incomplete",
+  "temp_path_enabled": True,
+  "web_ui_password": "$qbit_new_pw",
+}))
+PY
+)
+                if curl -fsS -b "$qbit_jar" -o /dev/null \
+                    --data "$qbit_payload" \
+                    http://localhost:8080/api/v2/app/setPreferences 2>/dev/null; then
+                    green "  qBittorrent: paths set, admin password rotated"
+                else
+                    yellow "  qBittorrent: setPreferences failed (config will be defaulted)"
+                    qbit_new_pw=""
+                fi
+
+                # Re-login with new password to create categories.
+                qbit_jar2=$(mktemp)
+                if curl -fsS -c "$qbit_jar2" -o /dev/null \
+                    --data-urlencode "username=admin" \
+                    --data-urlencode "password=$qbit_new_pw" \
+                    http://localhost:8080/api/v2/auth/login 2>/dev/null; then
+                    for cat in tv movies; do
+                        curl -fsS -b "$qbit_jar2" -o /dev/null \
+                            --data-urlencode "category=$cat" \
+                            --data-urlencode "savePath=/data/torrents/complete/$cat" \
+                            http://localhost:8080/api/v2/torrents/createCategory 2>/dev/null \
+                            && green "  qBittorrent: category '$cat' added" \
+                            || yellow "  qBittorrent: category '$cat' add failed (probably already exists)"
+                    done
+                    rm -f "$qbit_jar2"
+                fi
+            else
+                yellow "  qBittorrent: API login failed; leaving config alone."
+                qbit_new_pw=""
+            fi
+            rm -f "$qbit_jar"
+        else
+            yellow "  qBittorrent: no temp password in logs yet; skipping API config."
+        fi
+
+        # --- 6a.2 Prowlarr → register Sonarr & Radarr as Apps ----------------
+        # GET current applications; only POST what's missing.
+        existing_apps=$(curl -fsS -H "X-Api-Key: $prowlarr_key" \
+            http://localhost:9696/api/v1/applications 2>/dev/null \
+            | python3 -c "import sys,json; print(' '.join(a['name'] for a in json.load(sys.stdin)))" \
+            2>/dev/null || echo "")
+
+        add_prowlarr_app() {
+            local name="$1" impl="$2" base_url="$3" api_key="$4" cats="$5" extra_field="$6"
+            if echo " $existing_apps " | grep -q " $name "; then
+                green "  Prowlarr: $name already registered"; return
+            fi
+            local payload
+            payload=$(python3 - <<PY
+import json
+fields = [
+  {"name":"prowlarrUrl", "value":"http://prowlarr:9696"},
+  {"name":"baseUrl",     "value":"$base_url"},
+  {"name":"apiKey",      "value":"$api_key"},
+  {"name":"syncCategories", "value": $cats},
+]
+$extra_field
+print(json.dumps({
+  "syncLevel":"fullSync",
+  "name":"$name",
+  "implementation":"$impl",
+  "implementationName":"$impl",
+  "configContract":"${impl}Settings",
+  "fields": fields,
+  "tags": []
+}))
+PY
+)
+            if curl -fsS -o /dev/null -X POST \
+                -H "X-Api-Key: $prowlarr_key" -H "Content-Type: application/json" \
+                --data "$payload" \
+                http://localhost:9696/api/v1/applications 2>/dev/null; then
+                green "  Prowlarr: registered $name (auto-sync indexers now active)"
+            else
+                yellow "  Prowlarr: failed to register $name"
+            fi
+        }
+        add_prowlarr_app Sonarr Sonarr "http://sonarr:8989" "$sonarr_key" \
+            "[5000,5010,5020,5030,5040,5045,5050,5090]" \
+            'fields += [{"name":"animeSyncCategories","value":[5070]},{"name":"syncAnimeStandardFormatSearch","value":True}]'
+        add_prowlarr_app Radarr Radarr "http://radarr:7878" "$radarr_key" \
+            "[2000,2010,2020,2030,2040,2045,2050,2060,2070,2080,2090]" \
+            ''
+
+        # --- 6a.3 Sonarr & Radarr: download client + root folder -------------
+        # Host is "gluetun" when VPN is on (qBit lives in gluetun's namespace),
+        # "qbittorrent" otherwise.
+        qbit_host="qbittorrent"
+        [ "$USE_VPN" = "1" ] && qbit_host="gluetun"
+
+        add_arr_dc() {
+            local app="$1" key="$2" port="$3" category="$4"
+            # Check if a qBittorrent download client already exists.
+            local existing
+            existing=$(curl -fsS -H "X-Api-Key: $key" "http://localhost:$port/api/v3/downloadclient" 2>/dev/null \
+                | python3 -c "import sys,json; print(' '.join(d['implementation'] for d in json.load(sys.stdin)))" \
+                2>/dev/null || echo "")
+            if echo " $existing " | grep -q " QBittorrent "; then
+                green "  $app: qBittorrent download client already configured"; return
+            fi
+            local payload
+            payload=$(python3 - <<PY
+import json
+print(json.dumps({
+  "enable": True, "protocol": "torrent", "priority": 1,
+  "removeCompletedDownloads": True, "removeFailedDownloads": True,
+  "name": "qBittorrent",
+  "implementation": "QBittorrent", "implementationName": "qBittorrent",
+  "configContract": "QBittorrentSettings",
+  "fields": [
+    {"name":"host","value":"$qbit_host"},
+    {"name":"port","value":8080},
+    {"name":"useSsl","value":False},
+    {"name":"username","value":"admin"},
+    {"name":"password","value":"$qbit_new_pw"},
+    {"name":"tvCategory" if "$app"=="Sonarr" else "movieCategory","value":"$category"},
+    {"name":"initialState","value":0},
+    {"name":"contentLayout","value":2}
+  ],
+  "tags": []
+}))
+PY
+)
+            if curl -fsS -o /dev/null -X POST \
+                -H "X-Api-Key: $key" -H "Content-Type: application/json" \
+                --data "$payload" \
+                "http://localhost:$port/api/v3/downloadclient" 2>/dev/null; then
+                green "  $app: qBittorrent download client added (host=$qbit_host, category=$category)"
+            else
+                yellow "  $app: failed to add qBittorrent download client"
+            fi
+        }
+
+        add_arr_root() {
+            local app="$1" key="$2" port="$3" path="$4"
+            local existing
+            existing=$(curl -fsS -H "X-Api-Key: $key" "http://localhost:$port/api/v3/rootfolder" 2>/dev/null \
+                | python3 -c "import sys,json; print(' '.join(r['path'] for r in json.load(sys.stdin)))" \
+                2>/dev/null || echo "")
+            if echo " $existing " | grep -q " $path "; then
+                green "  $app: root folder $path already configured"; return
+            fi
+            if curl -fsS -o /dev/null -X POST \
+                -H "X-Api-Key: $key" -H "Content-Type: application/json" \
+                --data "{\"path\":\"$path\"}" \
+                "http://localhost:$port/api/v3/rootfolder" 2>/dev/null; then
+                green "  $app: root folder $path added"
+            else
+                yellow "  $app: failed to add root folder $path"
+            fi
+        }
+
+        if [ -n "$qbit_new_pw" ]; then
+            add_arr_dc Sonarr "$sonarr_key" 8989 tv
+            add_arr_dc Radarr "$radarr_key" 7878 movies
+        else
+            yellow "  Skipping Sonarr/Radarr download client (qBit password not known)."
+        fi
+        add_arr_root Sonarr "$sonarr_key" 8989 "/data/media/tv"
+        add_arr_root Radarr "$radarr_key" 7878 "/data/media/movies"
+
+        green "Bootstrap complete."
+    fi
+elif [ "$BOOTSTRAP" = "skip" ]; then
+    yellow "Bootstrap skipped (--no-bootstrap). Configure qBit/Prowlarr/Sonarr/Radarr via their web UIs."
+fi
+
 # 6b. Telegram bot — generate settings.py and start Searcharr ----------------
 if [ "$USE_TELEGRAM" = "1" ]; then
     cyan "Configuring Searcharr"
@@ -440,9 +705,12 @@ cat <<EOF
 Credentials & API keys
 ----------------------
 EOF
-if [ -n "$qbt_pass" ]; then
+if [ -n "$qbit_new_pw" ]; then
     echo "  qBittorrent  user: admin"
-    echo "  qBittorrent  pass: $qbt_pass   <-- change this on first login!"
+    echo "  qBittorrent  pass: $qbit_new_pw   (set by bootstrap — stable across restarts)"
+elif [ -n "$qbt_pass" ]; then
+    echo "  qBittorrent  user: admin"
+    echo "  qBittorrent  pass: $qbt_pass   <-- TEMP only! Change on first login or a new one is generated next restart."
 else
     yellow "Could not find qBittorrent temp password. Run:"
     echo   "      docker logs qbittorrent | grep -i 'temporary password'"

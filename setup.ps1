@@ -41,6 +41,17 @@
     services as https://sonarr.miniserver.local etc. over a single SSH
     tunnel (port 443) instead of memorising six port numbers.
 
+.PARAMETER Bootstrap
+    Force REST-API auto-config of qBittorrent (set stable password, add
+    tv/movies categories), Prowlarr (register Sonarr + Radarr as Apps),
+    and Sonarr/Radarr (add qBittorrent download client + root folder).
+    Default behavior: auto — runs on fresh installs only (so a re-run
+    against an established stack doesn't fight your hand-tweaks).
+
+.PARAMETER NoBootstrap
+    Skip the REST-API auto-config even on a fresh install. Use this if
+    you want to do step 4 of the README by hand in the web UIs.
+
 .EXAMPLE
     .\setup.ps1
     Uses default paths under the current directory.
@@ -65,7 +76,9 @@ param(
     [switch]$Vpn,
     [switch]$Telegram,
     [switch]$Recyclarr,
-    [switch]$Proxy
+    [switch]$Proxy,
+    [switch]$Bootstrap,
+    [switch]$NoBootstrap
 )
 
 $ErrorActionPreference = "Stop"
@@ -394,6 +407,195 @@ $radarrKey   = Get-ArrApiKey  (Join-Path $ConfigRoot "radarr\config.xml")
 $prowlarrKey = Get-ArrApiKey  (Join-Path $ConfigRoot "prowlarr\config.xml")
 
 # -----------------------------------------------------------------------------
+# 7a. Bootstrap — REST-API auto-config so step 4 of README is mostly already done
+# -----------------------------------------------------------------------------
+# Same scope as setup.sh's bootstrap. See that script's '6a' block for full
+# rationale.
+$qbitNewPw = $null
+
+$runBootstrap = $false
+if ($Bootstrap)       { $runBootstrap = $true }
+elseif ($NoBootstrap) { $runBootstrap = $false }
+else {
+    # 'auto': fresh install heuristic — Sonarr's config.xml written in last 5 min.
+    $sonarrCfg = Join-Path $ConfigRoot "sonarr\config.xml"
+    if (Test-Path -LiteralPath $sonarrCfg) {
+        $age = (Get-Date) - (Get-Item -LiteralPath $sonarrCfg).LastWriteTime
+        if ($age.TotalSeconds -lt 300) { $runBootstrap = $true }
+    }
+}
+
+if ($runBootstrap) {
+    Write-Step "Bootstrap: auto-configuring qBittorrent, Prowlarr, Sonarr, Radarr via REST API"
+    if (-not $sonarrKey -or -not $radarrKey -or -not $prowlarrKey) {
+        Write-WarnMsg "Skipping bootstrap: not all API keys are available yet."
+        Write-WarnMsg "Re-run with -Bootstrap once Sonarr/Radarr/Prowlarr have finished initialising."
+    } else {
+        # --- 7a.1 qBittorrent ----------------------------------------------
+        if ($qbtPass) {
+            # Strong random password unless user supplied one in $env:QBIT_ADMIN_PASSWORD.
+            $qbitNewPw = if ($env:QBIT_ADMIN_PASSWORD) { $env:QBIT_ADMIN_PASSWORD } else {
+                $bytes = New-Object byte[] 20
+                [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+                (([Convert]::ToBase64String($bytes)) -replace '[/+=]', '').Substring(0, 20)
+            }
+
+            $sess = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+            try {
+                Invoke-WebRequest -Uri "http://localhost:8080/api/v2/auth/login" -Method Post `
+                    -Body @{ username = "admin"; password = $qbtPass } `
+                    -WebSession $sess -UseBasicParsing | Out-Null
+
+                $prefs = @{
+                    save_path         = "/data/torrents/complete"
+                    temp_path         = "/data/torrents/incomplete"
+                    temp_path_enabled = $true
+                    web_ui_password   = $qbitNewPw
+                }
+                $body = "json=" + ($prefs | ConvertTo-Json -Compress)
+                Invoke-WebRequest -Uri "http://localhost:8080/api/v2/app/setPreferences" -Method Post `
+                    -Body $body -WebSession $sess -UseBasicParsing | Out-Null
+                Write-OK "  qBittorrent: paths set, admin password rotated"
+
+                # Re-login with new password to create categories.
+                $sess2 = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+                Invoke-WebRequest -Uri "http://localhost:8080/api/v2/auth/login" -Method Post `
+                    -Body @{ username = "admin"; password = $qbitNewPw } `
+                    -WebSession $sess2 -UseBasicParsing | Out-Null
+                foreach ($cat in @("tv", "movies")) {
+                    try {
+                        Invoke-WebRequest -Uri "http://localhost:8080/api/v2/torrents/createCategory" -Method Post `
+                            -Body @{ category = $cat; savePath = "/data/torrents/complete/$cat" } `
+                            -WebSession $sess2 -UseBasicParsing | Out-Null
+                        Write-OK "  qBittorrent: category '$cat' added"
+                    } catch {
+                        Write-WarnMsg "  qBittorrent: category '$cat' add failed (probably already exists)"
+                    }
+                }
+            } catch {
+                Write-WarnMsg "  qBittorrent: API config failed: $($_.Exception.Message)"
+                $qbitNewPw = $null
+            }
+        } else {
+            Write-WarnMsg "  qBittorrent: no temp password in logs yet; skipping API config."
+        }
+
+        # --- 7a.2 Prowlarr → register Sonarr & Radarr as Apps ----------------
+        $existingApps = @()
+        try {
+            $existingApps = (Invoke-RestMethod -Uri "http://localhost:9696/api/v1/applications" `
+                -Headers @{ "X-Api-Key" = $prowlarrKey } -UseBasicParsing) | ForEach-Object { $_.name }
+        } catch { }
+
+        function Add-ProwlarrApp([string]$name, [string]$baseUrl, [string]$apiKey, [int[]]$cats, [hashtable]$extra) {
+            if ($existingApps -contains $name) {
+                Write-OK "  Prowlarr: $name already registered"; return
+            }
+            $fields = @(
+                @{ name = "prowlarrUrl"; value = "http://prowlarr:9696" },
+                @{ name = "baseUrl";     value = $baseUrl },
+                @{ name = "apiKey";      value = $apiKey },
+                @{ name = "syncCategories"; value = $cats }
+            )
+            foreach ($k in $extra.Keys) { $fields += @{ name = $k; value = $extra[$k] } }
+            $payload = @{
+                syncLevel = "fullSync"
+                name = $name
+                implementation = $name
+                implementationName = $name
+                configContract = "${name}Settings"
+                fields = $fields
+                tags = @()
+            } | ConvertTo-Json -Depth 6
+            try {
+                Invoke-RestMethod -Uri "http://localhost:9696/api/v1/applications" -Method Post `
+                    -Headers @{ "X-Api-Key" = $prowlarrKey } -ContentType "application/json" `
+                    -Body $payload -UseBasicParsing | Out-Null
+                Write-OK "  Prowlarr: registered $name (auto-sync indexers now active)"
+            } catch {
+                Write-WarnMsg "  Prowlarr: failed to register ${name}: $($_.Exception.Message)"
+            }
+        }
+        Add-ProwlarrApp "Sonarr" "http://sonarr:8989" $sonarrKey `
+            @(5000,5010,5020,5030,5040,5045,5050,5090) `
+            @{ animeSyncCategories = @(5070); syncAnimeStandardFormatSearch = $true }
+        Add-ProwlarrApp "Radarr" "http://radarr:7878" $radarrKey `
+            @(2000,2010,2020,2030,2040,2045,2050,2060,2070,2080,2090) @{}
+
+        # --- 7a.3 Sonarr & Radarr: download client + root folder -------------
+        $qbitHost = if ($Vpn) { "gluetun" } else { "qbittorrent" }
+
+        function Add-ArrDownloadClient([string]$app, [string]$key, [int]$port, [string]$category) {
+            try {
+                $existing = (Invoke-RestMethod -Uri "http://localhost:$port/api/v3/downloadclient" `
+                    -Headers @{ "X-Api-Key" = $key } -UseBasicParsing) | ForEach-Object { $_.implementation }
+                if ($existing -contains "QBittorrent") {
+                    Write-OK "  ${app}: qBittorrent download client already configured"; return
+                }
+            } catch { }
+            $catField = if ($app -eq "Sonarr") { "tvCategory" } else { "movieCategory" }
+            $payload = @{
+                enable = $true; protocol = "torrent"; priority = 1
+                removeCompletedDownloads = $true; removeFailedDownloads = $true
+                name = "qBittorrent"
+                implementation = "QBittorrent"; implementationName = "qBittorrent"
+                configContract = "QBittorrentSettings"
+                fields = @(
+                    @{ name = "host";       value = $qbitHost },
+                    @{ name = "port";       value = 8080 },
+                    @{ name = "useSsl";     value = $false },
+                    @{ name = "username";   value = "admin" },
+                    @{ name = "password";   value = $qbitNewPw },
+                    @{ name = $catField;    value = $category },
+                    @{ name = "initialState";  value = 0 },
+                    @{ name = "contentLayout"; value = 2 }
+                )
+                tags = @()
+            } | ConvertTo-Json -Depth 6
+            try {
+                Invoke-RestMethod -Uri "http://localhost:$port/api/v3/downloadclient" -Method Post `
+                    -Headers @{ "X-Api-Key" = $key } -ContentType "application/json" `
+                    -Body $payload -UseBasicParsing | Out-Null
+                Write-OK "  ${app}: qBittorrent download client added (host=$qbitHost, category=$category)"
+            } catch {
+                Write-WarnMsg "  ${app}: failed to add qBittorrent download client: $($_.Exception.Message)"
+            }
+        }
+
+        function Add-ArrRootFolder([string]$app, [string]$key, [int]$port, [string]$path) {
+            try {
+                $existing = (Invoke-RestMethod -Uri "http://localhost:$port/api/v3/rootfolder" `
+                    -Headers @{ "X-Api-Key" = $key } -UseBasicParsing) | ForEach-Object { $_.path }
+                if ($existing -contains $path) {
+                    Write-OK "  ${app}: root folder $path already configured"; return
+                }
+            } catch { }
+            try {
+                Invoke-RestMethod -Uri "http://localhost:$port/api/v3/rootfolder" -Method Post `
+                    -Headers @{ "X-Api-Key" = $key } -ContentType "application/json" `
+                    -Body "{`"path`":`"$path`"}" -UseBasicParsing | Out-Null
+                Write-OK "  ${app}: root folder $path added"
+            } catch {
+                Write-WarnMsg "  ${app}: failed to add root folder ${path}: $($_.Exception.Message)"
+            }
+        }
+
+        if ($qbitNewPw) {
+            Add-ArrDownloadClient "Sonarr" $sonarrKey 8989 "tv"
+            Add-ArrDownloadClient "Radarr" $radarrKey 7878 "movies"
+        } else {
+            Write-WarnMsg "  Skipping Sonarr/Radarr download client (qBit password not known)."
+        }
+        Add-ArrRootFolder "Sonarr" $sonarrKey 8989 "/data/media/tv"
+        Add-ArrRootFolder "Radarr" $radarrKey 7878 "/data/media/movies"
+
+        Write-OK "Bootstrap complete."
+    }
+} elseif ($NoBootstrap) {
+    Write-WarnMsg "Bootstrap skipped (-NoBootstrap). Configure qBit/Prowlarr/Sonarr/Radarr via their web UIs."
+}
+
+# -----------------------------------------------------------------------------
 # 7b. Telegram bot — generate Searcharr settings.py and start the container
 # -----------------------------------------------------------------------------
 $telegramBotPassword      = $null
@@ -587,9 +789,12 @@ Write-Host "  *** Copy these values to a password manager, then clear your termi
 Write-Host "  ***   Clear-History" -ForegroundColor Yellow
 Write-Host "  *** Do not share this terminal output." -ForegroundColor Yellow
 Write-Host ""
-if ($qbtPass) {
+if ($qbitNewPw) {
     Write-Host "  qBittorrent  user: admin"
-    Write-Host "  qBittorrent  pass: $qbtPass   <-- change this on first login!"
+    Write-Host "  qBittorrent  pass: $qbitNewPw   (set by bootstrap — stable across restarts)"
+} elseif ($qbtPass) {
+    Write-Host "  qBittorrent  user: admin"
+    Write-Host "  qBittorrent  pass: $qbtPass   <-- TEMP only! Change on first login or a new one is generated next restart."
 } else {
     Write-WarnMsg "Could not find qBittorrent temp password. Run:"
     Write-Host    "      docker logs qbittorrent | findstr /i ""temporary password"""
