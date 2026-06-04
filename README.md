@@ -741,19 +741,77 @@ manage qBittorrent — all over an encrypted tunnel.
 
 ### 5. Don't accidentally lock yourself out
 
-- **Disable sleep** on the mini-PC (Control Panel → Power Options → set
-  "Put the computer to sleep" to **Never** on the active plan). Otherwise
-  it'll go unreachable until you walk to the closet to nudge the mouse.
-- **Don't disable the network adapter on lid close / monitor unplug.** Some
-  mini-PCs ship with this enabled — check Device Manager → your network
-  adapter → Properties → Power Management.
-- **Enable auto-login on boot** (Settings → Accounts → Sign-in options →
-  alternatively `netplwiz` and uncheck "Users must enter a user name and
-  password"). Necessary so Docker Desktop starts after a power blip without
-  needing a keyboard plugged in.
-- **Test reboot-and-recover end-to-end** before you put the PC in the
-  closet: reboot it, walk away, and confirm everything comes back up over
-  SSH within ~2 minutes.
+A closeted mini-PC has no keyboard, no monitor, and no one to wake it
+up. Windows' default power settings will absolutely brick this setup —
+the machine sleeps overnight, drops off the LAN, and you can't reach
+it until you physically walk to the closet. Fix it once, the safe way:
+
+**Disable every form of sleep, hibernation, and lid-close-action.**
+Run **PowerShell as administrator** on the mini-PC:
+
+```powershell
+# Disable sleep on AC and on battery (mini-PCs often pretend to be laptops)
+powercfg /change standby-timeout-ac 0
+powercfg /change standby-timeout-dc 0
+
+# Disable hibernation entirely (also reclaims ~8 GB of hiberfil.sys)
+powercfg /hibernate off
+
+# Disable the disk spinning down (matters for spinning-rust media drives)
+powercfg /change disk-timeout-ac 0
+powercfg /change disk-timeout-dc 0
+
+# Disable "turn off display" (cosmetic — display is unplugged anyway,
+# but a "screen off" event sometimes triggers other power transitions)
+powercfg /change monitor-timeout-ac 0
+powercfg /change monitor-timeout-dc 0
+
+# Make the lid-close (and power-button) actions do NOTHING. Mini-PCs
+# without a lid still pretend to have one; this stops phantom suspends.
+powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+powercfg /setactive SCHEME_CURRENT
+```
+
+> Setup script tip: `setup.ps1`'s pre-flight check warns when
+> `standby-timeout-ac` is non-zero, so a quick `.\setup.ps1` re-run
+> will tell you if you missed something.
+
+**Verify it stuck.** Two commands:
+
+```powershell
+# 1. Check sleep, hibernate, disk, monitor timeouts (all should say 0):
+powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE       | findstr "Index"
+powercfg /query SCHEME_CURRENT SUB_DISK  DISKIDLE          | findstr "Index"
+powercfg /query SCHEME_CURRENT SUB_VIDEO VIDEOIDLE         | findstr "Index"
+powercfg /availablesleepstates    # "Hibernate" should appear under "unavailable"
+
+# 2. Check there's no scheduled wake / scheduled sleep:
+powercfg /waketimers
+powercfg /lastwake
+```
+
+**Don't disable the network adapter on lid close / monitor unplug.** Some
+mini-PCs ship with this enabled — check Device Manager → your network
+adapter → Properties → Power Management, and untick *"Allow the computer
+to turn off this device to save power"*.
+
+**Enable auto-login on boot** (Settings → Accounts → Sign-in options →
+alternatively `netplwiz` and uncheck "Users must enter a user name and
+password"). Necessary so Docker Desktop starts after a power blip without
+needing a keyboard plugged in.
+
+**Test reboot-and-recover end-to-end** before you put the PC in the
+closet:
+```powershell
+shutdown /r /t 0
+```
+…then walk away. From your Mac, after ~2 minutes:
+```fish
+ssh miniserver "docker compose ps"
+```
+Every service should be back up. If anything's missing, fix it now —
+not when you've already put the lid back on the closet.
 
 ### 6. Do not expose SSH (or any of this) to the internet
 
@@ -1303,6 +1361,7 @@ Telegram**.
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | Docker Desktop won't start (WSL / Hyper-V error) | Virtualization is disabled in BIOS. Reboot, enter BIOS, enable Intel VT-x / AMD-V (often called "SVM"). |
 | Docker Desktop hangs at "Starting"             | `wsl --update` in an elevated PowerShell, then restart Docker Desktop.                                |
+| Mini-PC unreachable after a few hours / overnight | Windows put it to sleep, hibernated it, or the network adapter powered down. See [Don't accidentally lock yourself out](#5-dont-accidentally-lock-yourself-out) — the `powercfg` block disables all of them. |
 | `setup.ps1` blocked by execution policy        | `powershell -ExecutionPolicy Bypass -File .\setup.ps1`                                                |
 | Sonarr/Radarr can't reach Prowlarr or qBittorrent | Use the **service name** as the hostname (`prowlarr`, `qbittorrent`), not `localhost` or `127.0.0.1`. |
 | Can't reach Sonarr/Radarr/Prowlarr/qBittorrent from another LAN device | By design — admin UIs are bound to `127.0.0.1` on the mini-PC. Use the SSH tunnel pattern in [Remote management](#remote-management-ssh). |
