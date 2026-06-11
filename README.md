@@ -108,6 +108,12 @@ From PowerShell, in the folder containing this README:
 .\setup.ps1 -DataRoot D:\media-data -ConfigRoot D:\media-server\config
 ```
 
+> **What is `<DataRoot>`?** Whenever this README writes `<DataRoot>` later
+> (e.g. `<DataRoot>\media\movies` in step 3), it means whatever path you
+> passed to `-DataRoot` — or `.\data` next to this README if you used the
+> defaults. Same idea for `<ConfigRoot>`. The script also writes these
+> into `.env` as `DATA_ROOT` and `CONFIG_ROOT` for the containers.
+
 The script will:
 
 1. Verify Docker Desktop is running.
@@ -515,6 +521,17 @@ The first-run wizard walks you through it:
 Done. Friends and family can now request shows/movies from a Netflix-like UI
 and they'll appear in Plex automatically.
 
+> ✅ **Core setup complete!** The stack is running and wired up. From here,
+> the remaining sections are independent — pick what you need:
+>
+> - **Mini-PC in a closet / different room?** → [Remote management (SSH)](#remote-management-ssh)
+>   to reach the web UIs from your laptop.
+> - **Want pretty URLs like `https://sonarr.miniserver.local`?** →
+>   [Reverse proxy (Caddy)](#reverse-proxy-caddy--friendly-https-hostnames)
+>   (do SSH first; Caddy builds on top of it).
+> - **Torrenting?** → [VPN](#vpn) — strongly recommended.
+> - **Day-to-day operation, updates, backups** → [Day-to-day commands](#day-to-day-commands).
+
 ---
 
 ## Day-to-day commands
@@ -526,8 +543,9 @@ docker compose restart radarr  # restart one service
 docker compose down            # stop everything (keeps data)
 ```
 
-To uninstall completely: `docker compose down -v` and delete the `config/`,
-`downloads/`, and `media/` folders.
+To uninstall completely: `docker compose down -v` and delete the `config/`
+and `data/` folders (i.e. whatever you passed as `<ConfigRoot>` and
+`<DataRoot>` in step 2).
 
 ### Update flow (end-to-end)
 
@@ -755,18 +773,26 @@ on a slower spinning disk, you have two options:
 
 ## Remote management (SSH)
 
-> **You'll need this.** The security hardening binds Sonarr, Radarr, Prowlarr
-> and qBittorrent to `127.0.0.1` on the mini-PC — they're not reachable from
-> other LAN devices by design. If the mini-PC lives in a closet, this section
-> is how you reach those UIs from your Mac/laptop.
->
-> **If you've enabled the Caddy reverse proxy** (above), forward just port
-> `443` from your Mac and use the friendly HTTPS hostnames instead of
-> the six-port pattern below.
+**What this section gives you:** the ability to open
+`http://localhost:8989` on your Mac/laptop and have it actually reach
+Sonarr on the mini-PC — without exposing any port to your LAN or the
+internet.
 
-The idea: **SSH into the mini-PC and tunnel each web UI back to your local
-machine**, so opening `http://localhost:8989` on your Mac actually hits
-Sonarr on the mini-PC, end-to-end encrypted, with no exposed ports.
+**Why you need it:** for security, the admin UIs (Sonarr, Radarr,
+Prowlarr, qBittorrent, Bazarr) are bound to `127.0.0.1` on the mini-PC.
+That means **they're only reachable from the mini-PC itself** — open a
+browser on your laptop and `http://192.168.1.42:8989` will fail by
+design. SSH port-forwarding gives your laptop a secure, encrypted
+"window" into those local-only services.
+
+**You only need this if** the mini-PC isn't the machine you sit in front
+of. If you run a browser directly on the mini-PC, skip the whole
+section.
+
+> **Already planning to use the [Caddy reverse proxy](#reverse-proxy-caddy--friendly-https-hostnames) below?**
+> Still do steps 1 and 2 here (you need SSH login working either way) —
+> but in step 3, you'll forward a single port (`443`) instead of six. The
+> Caddy section gives you the alternate `~/.ssh/config` block.
 
 ### 1. Enable the built-in OpenSSH server on Windows
 
@@ -793,6 +819,19 @@ router so the IP doesn't drift — most routers have this under
 
 ### 2. Key-based login (one-time, from your Mac)
 
+> **"What's my username and password?"** On the mini-PC, run `whoami` in
+> PowerShell — the part after `\` is your SSH username. Your **Windows
+> PIN does not work over SSH** (PINs only unlock the local device). The
+> SSH password is either:
+> - your **Microsoft account password** (if you sign in with a Microsoft
+>   account), or
+> - the **local account password** (if it's a local account).
+>
+> If your local account has no password set, OpenSSH refuses empty
+> passwords. Either set one with `net user <username> *` (PowerShell as
+> admin), or skip password auth entirely by using the manual key-copy
+> method shown below.
+
 ```fish
 # If you don't already have one:
 ssh-keygen -t ed25519
@@ -807,7 +846,28 @@ ssh-copy-id youruser@192.168.1.42
 ssh youruser@192.168.1.42 "hostname"
 ```
 
+> **Manual key copy (no password needed).** If `ssh-copy-id` won't work,
+> on the mini-PC paste your Mac's `~/.ssh/id_ed25519.pub` into the right
+> file:
+> - **Non-admin account:** append to `%USERPROFILE%\.ssh\authorized_keys`.
+> - **Admin account:** Windows OpenSSH reads
+>   `C:\ProgramData\ssh\administrators_authorized_keys` instead. After
+>   creating it, lock down permissions or sshd will ignore it:
+>   ```powershell
+>   icacls C:\ProgramData\ssh\administrators_authorized_keys `
+>     /inheritance:r /grant "Administrators:F" /grant "SYSTEM:F"
+>   Restart-Service sshd
+>   ```
+> Once the key is in place, `ssh youruser@192.168.1.42` from your Mac
+> works with no password at all.
+
 ### 3. Tunnel every web UI in one command
+
+Each `-L <local-port>:localhost:<remote-port>` flag tells SSH: "open
+`<local-port>` on my Mac, and any traffic to it gets forwarded through
+the SSH connection to `<remote-port>` on the mini-PC's loopback." So
+`-L 8989:localhost:8989` makes the mini-PC's Sonarr available as
+`http://localhost:8989` on your Mac.
 
 ```fish
 ssh -L 8989:localhost:8989 \
@@ -844,14 +904,16 @@ Drop this into `~/.ssh/config` on your Mac:
 Host miniserver
     HostName 192.168.1.42
     User youruser
-    # Forward every web UI in the media stack:
-    LocalForward 8989 localhost:8989
-    LocalForward 7878 localhost:7878
-    LocalForward 9696 localhost:9696
-    LocalForward 8080 localhost:8080
-    LocalForward 6767 localhost:6767
-    LocalForward 5055 localhost:5055
-    LocalForward 8000 localhost:8000
+    # Forward every web UI in the media stack.
+    # `LocalForward <mac-port> localhost:<mini-pc-port>` is the
+    # ssh_config equivalent of `-L <mac-port>:localhost:<mini-pc-port>`.
+    LocalForward 8989 localhost:8989   # Sonarr
+    LocalForward 7878 localhost:7878   # Radarr
+    LocalForward 9696 localhost:9696   # Prowlarr
+    LocalForward 8080 localhost:8080   # qBittorrent
+    LocalForward 6767 localhost:6767   # Bazarr
+    LocalForward 5055 localhost:5055   # Overseerr
+    LocalForward 8000 localhost:8000   # Gluetun control API (VPN only)
     # Keep the connection healthy on flaky Wi-Fi:
     ServerAliveInterval 30
     ServerAliveCountMax 4
@@ -963,9 +1025,26 @@ connect with macOS Finder → `⌘K` → `vnc://192.168.1.42`.
 
 ## Reverse proxy (Caddy) — friendly HTTPS hostnames
 
-Six SSH `-L` flags work, but one `-L` plus URLs like
-`https://sonarr.miniserver.local` are nicer. This repo ships an optional
-Caddy reverse proxy override that:
+**What this section gives you:** instead of remembering
+`http://localhost:8989`, `:7878`, `:9696`, … you open
+`https://sonarr.miniserver.local`, `https://radarr.miniserver.local`,
+etc. — over real HTTPS, with one SSH port forward instead of six.
+
+**Prerequisite:** you've already set up [Remote management (SSH)](#remote-management-ssh)
+(steps 1 and 2 — login works). Caddy *replaces* step 3's six `-L` flags
+with a single one.
+
+**When to use it:** purely for nicer UX. If `http://localhost:8989`
+through an SSH tunnel works for you, skip this section entirely — no
+features are lost.
+
+**A reverse proxy** is a server that sits in front of your other
+services and routes requests by hostname. Here, Caddy listens on
+`127.0.0.1:443` and forwards `sonarr.miniserver.local` → Sonarr,
+`radarr.miniserver.local` → Radarr, and so on. It also handles HTTPS
+(self-signed, via a local CA).
+
+This repo ships an optional Caddy reverse proxy override that:
 
 - Listens on `127.0.0.1:443` (TLS, loopback only — same security model
   as everything else).
