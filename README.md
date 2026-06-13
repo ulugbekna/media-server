@@ -1150,6 +1150,12 @@ and now want to add the VPN, the path is:
    docker exec qbittorrent wget -qO- --timeout=5 https://ifconfig.me   # should fail
    docker start gluetun
    ```
+   > **After restarting gluetun, also recreate qBittorrent:** qBit shares
+   > gluetun's network namespace, and when gluetun stops the netns is torn
+   > down. Even after gluetun comes back, qBit is wedged with a dead
+   > network until you recreate it: `docker rm -f qbittorrent && docker
+   > compose -f docker-compose.yml -f docker-compose.vpn.yml up -d
+   > qbittorrent`. Plain `docker restart` is *not* enough.
 5. **Re-point Sonarr & Radarr's download client at `gluetun`** (the
    bootstrap auto-config only runs on first-time setup, so existing
    entries still point at `qbittorrent`). Two options:
@@ -1179,6 +1185,32 @@ and now want to add the VPN, the path is:
 
 6. **Sanity-check Sonarr/Radarr** can still talk to qBit: Settings →
    Download Clients → qBittorrent → **Test** → green ✓.
+
+> #### Two gotchas you may hit during the recreate
+>
+> **qBittorrent crash-loops with "termination initiated" in
+> `config/qbittorrent/qBittorrent/logs/qbittorrent.log` and never binds
+> port 8080.** Cause: a *stale lockfile* from the previous (force-killed)
+> qBit. New qBit sees the lockfile, assumes another instance is running,
+> hands off via IPC, and exits cleanly within ~1 s. Fix:
+> ```powershell
+> docker stop qbittorrent
+> Remove-Item -Force C:\Users\Kyle\media-server\config\qbittorrent\qBittorrent\lockfile,
+>                    C:\Users\Kyle\media-server\config\qbittorrent\qBittorrent\ipc-socket
+> docker start qbittorrent
+> ```
+>
+> **Sonarr/Radarr show *"download client qBittorrent places downloads in
+> /data/torrents/complete/tv but this directory does not appear to exist
+> inside the container"*.** The category save paths only get created
+> when a torrent first lands in them. Just `mkdir` them on the host:
+> ```powershell
+> New-Item -ItemType Directory -Force `
+>   -Path C:\Users\Kyle\media-server\data\torrents\complete\tv,
+>         C:\Users\Kyle\media-server\data\torrents\complete\movies
+> ```
+> Then in each *arr's UI: System → Health → click the warning → Refresh,
+> or just wait for the next scheduled health check.
 
 ### Important wiring difference when VPN is on
 
