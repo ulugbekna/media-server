@@ -37,6 +37,7 @@ in a single `setup.ps1` invocation.
 - [Prerequisites](#prerequisites)
 - [1. Install Docker Desktop and Plex](#1-install-docker-desktop-and-plex)
 - [2. Run the setup script](#2-run-the-setup-script)
+  - [Already running Sonarr/Radarr natively on this machine?](#already-running-sonarrradarr-natively-on-this-machine)
 - [3. Finish the Plex first-run wizard](#3-finish-the-plex-first-run-wizard)
 - [4. Wire the services together](#4-wire-the-services-together)
   - [4a. qBittorrent](#4a-qbittorrent-httplocalhost8080)
@@ -54,6 +55,7 @@ in a single `setup.ps1` invocation.
 - [Reverse proxy (Caddy) — friendly HTTPS hostnames](#reverse-proxy-caddy--friendly-https-hostnames)
 - [Recommended add-ons](#recommended-add-ons)
 - [VPN](#vpn) — Gluetun for qBittorrent, NordVPN walkthrough
+  - [Migrating an existing install to gluetun](#migrating-an-existing-install-to-gluetun)
 - [TRaSH-Guides quality profiles (optional, via Recyclarr)](#trash-guides-quality-profiles-optional-via-recyclarr)
 - [Telegram requests](#telegram-requests) — Searcharr bot for /movie and /series
 - [Troubleshooting](#troubleshooting)
@@ -125,6 +127,54 @@ values into the web UIs in step 4. If you lose them, just re-run the
 script; it's idempotent and will reprint them.
 
 On Linux / macOS, use `./setup.sh` instead.
+
+### Already running Sonarr/Radarr natively on this machine?
+
+The [dev.to article](https://dev.to/rafaelmagalhaes/home-media-server-with-plex-sonarr-radarr-qbitorrent-and-overseerr-2a84)
+that inspired this repo also describes a native Windows install of
+Sonarr/Radarr. If you followed that path, those native apps will be bound to
+ports `8989` / `7878` already (typically as Windows services that auto-start
+on boot). Docker Desktop will silently fail to publish the same ports, the
+containers will look healthy but be unreachable, and `http://localhost:8989`
+will keep opening the **native** UI instead of the container's. Sort it out
+*before* running `setup.ps1` so the bootstrap can actually reach the
+container APIs.
+
+From an elevated PowerShell:
+
+```powershell
+# 1. Confirm the collision: are 8989 / 7878 owned by Sonarr.Console / Radarr.Console?
+Get-NetTCPConnection -State Listen -LocalPort 8989,7878 |
+  Select-Object LocalPort,OwningProcess,
+                @{n='Process';e={(Get-Process -Id $_.OwningProcess).ProcessName}}
+
+# 2. Stop the native services and prevent them from grabbing the ports on next boot.
+Stop-Service Sonarr,Radarr -Force -ErrorAction SilentlyContinue
+Set-Service  Sonarr -StartupType Disabled -ErrorAction SilentlyContinue
+Set-Service  Radarr -StartupType Disabled -ErrorAction SilentlyContinue
+```
+
+Then, if you already ran `setup.ps1` once, force-recreate the two containers
+so they re-attempt the port bind (containers that started while the ports
+were taken keep their broken publish until you recreate them):
+
+```powershell
+cd <folder with this README>
+docker compose up -d --force-recreate --no-deps sonarr radarr
+```
+
+Verify: `docker ps` should now show `127.0.0.1:8989->8989/tcp` (and the
+matching 7878 line) instead of just `8989/tcp`, and `localhost:8989` should
+open the LinuxServer.io-built Sonarr UI — not your native one. The native
+install's config still lives at `%ProgramData%\Sonarr` and
+`%ProgramData%\Radarr` if you want to extract indexers / quality profiles
+from it later; once you're happy with the Docker stack, you can uninstall
+the native apps from **Settings → Apps → Installed apps**.
+
+> **Linux/macOS** equivalent: `sudo systemctl disable --now sonarr radarr`
+> (Debian/Ubuntu builds) or `brew services stop sonarr radarr` (macOS
+> Homebrew), then the same `docker compose up -d --force-recreate --no-deps
+> sonarr radarr`.
 
 ## 3. Finish the Plex first-run wizard
 
@@ -1064,6 +1114,72 @@ switch). No IP leaks.
    ```
    Should show your provider's IP, not your home IP.
 
+### Migrating an existing install to gluetun
+
+If you've already been running the stack for a while (qBittorrent on the
+plain Docker bridge, Sonarr/Radarr configured with `host: qbittorrent`)
+and now want to add the VPN, the path is:
+
+1. **Add VPN credentials to `.env`** (see the NordVPN walkthroughs below
+   for OpenVPN/WireGuard specifics). Make sure `LAN_SUBNET` matches your
+   subnet — e.g. `192.168.1.0/24`.
+2. **Disconnect any host-level VPN client** on the same provider before
+   step 3 (NordVPN's Windows app, ProtonVPN client, etc.). Otherwise
+   gluetun's outbound handshake goes *through* the host tunnel — same
+   provider, double-NAT'd — and usually fails or behaves erratically.
+   ```powershell
+   # NordVPN GUI: tray icon → Disconnect; or use the CLI if you installed it.
+   # If you also want it not to auto-connect on boot:
+   #   Open NordVPN app → Settings → General → Auto-connect → Off
+   ```
+3. **Bring up the VPN stack.** This adds gluetun and re-creates the
+   qBittorrent container inside gluetun's network namespace:
+   ```powershell
+   cd <folder with this README>
+   docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d
+   ```
+4. **Verify the egress.** From the mini-PC:
+   ```powershell
+   # Should print your provider's IP in the configured country —
+   # NOT your home IP.
+   docker exec qbittorrent wget -qO- https://ifconfig.me
+
+   # Bonus: prove the kill switch works. Stop gluetun, then re-curl —
+   # qBittorrent should lose connectivity instantly.
+   docker stop gluetun
+   docker exec qbittorrent wget -qO- --timeout=5 https://ifconfig.me   # should fail
+   docker start gluetun
+   ```
+5. **Re-point Sonarr & Radarr's download client at `gluetun`** (the
+   bootstrap auto-config only runs on first-time setup, so existing
+   entries still point at `qbittorrent`). Two options:
+
+   - **GUI:** Sonarr → Settings → Download Clients → click your
+     qBittorrent entry → change **Host** from `qbittorrent` to `gluetun`
+     → Test → Save. Repeat for Radarr.
+   - **API one-liner** (run on the mini-PC; pulls the API keys from
+     each service's `config.xml` and patches the existing entry in
+     place):
+     ```powershell
+     foreach ($app in @{Sonarr=8989; Radarr=7878}.GetEnumerator()) {
+       $cfg = "C:\Users\Kyle\media-server\config\$($app.Key.ToLower())\config.xml"
+       $key = ([xml](Get-Content $cfg)).Config.ApiKey
+       $port = $app.Value
+       $clients = Invoke-RestMethod "http://127.0.0.1:$port/api/v3/downloadclient" `
+                   -Headers @{ "X-Api-Key" = $key }
+       foreach ($c in $clients | Where-Object implementation -eq QBittorrent) {
+         ($c.fields | Where-Object name -eq host).value = "gluetun"
+         Invoke-RestMethod "http://127.0.0.1:$port/api/v3/downloadclient/$($c.id)" `
+           -Method Put -Headers @{ "X-Api-Key" = $key } `
+           -ContentType "application/json" -Body ($c | ConvertTo-Json -Depth 6) | Out-Null
+         "$($app.Key) download client #$($c.id): host -> gluetun"
+       }
+     }
+     ```
+
+6. **Sanity-check Sonarr/Radarr** can still talk to qBit: Settings →
+   Download Clients → qBittorrent → **Test** → green ✓.
+
 ### Important wiring difference when VPN is on
 
 The qBittorrent container shares Gluetun's network namespace, so it has **no
@@ -1417,6 +1533,7 @@ Telegram**.
 | Mini-PC unreachable after a few hours / overnight | Windows put it to sleep, hibernated it, or the network adapter powered down. See [Don't accidentally lock yourself out](#5-dont-accidentally-lock-yourself-out) — the `powercfg` block disables all of them. |
 | `setup.ps1` blocked by execution policy        | `powershell -ExecutionPolicy Bypass -File .\setup.ps1`                                                |
 | Sonarr/Radarr can't reach Prowlarr or qBittorrent | Use the **service name** as the hostname (`prowlarr`, `qbittorrent`), not `localhost` or `127.0.0.1`. |
+| `localhost:8989` / `localhost:7878` keeps opening a **native** Sonarr/Radarr you installed earlier (not the Docker container) | A native install owns the port; Docker silently fails to publish. Fix: [Already running Sonarr/Radarr natively on this machine?](#already-running-sonarrradarr-natively-on-this-machine) |
 | Can't reach Sonarr/Radarr/Prowlarr/qBittorrent from another LAN device | By design — admin UIs are bound to `127.0.0.1` on the mini-PC. Use the SSH tunnel pattern in [Remote management](#remote-management-ssh). |
 | Prowlarr: indexer red, error "Cloudflare challenge" | Add the FlareSolverr container (see Prowlarr section), then in Prowlarr → Settings → Indexers → Add Indexer Proxy → FlareSolverr with host `http://flaresolverr:8191/`. |
 | Prowlarr: added an indexer but Sonarr/Radarr don't see it | Prowlarr → Settings → Apps → click the Sonarr/Radarr row → **Sync App Indexers** (or wait ~30 s for the next auto-sync). If still nothing, Test the connection and re-check the *arr API key. |
@@ -1428,7 +1545,7 @@ Telegram**.
 | Sonarr error "Remote path mapping"             | qBittorrent and Sonarr both see `/data/torrents/complete`, so no mapping is needed — make sure both root folders match. |
 | Plex doesn't see new files                     | In Plex: Library → Scan Library Files. Or wire **Sonarr/Radarr → Connect → Plex** to auto-refresh.    |
 | Plex unreachable from Sonarr/Radarr (Docker → native Plex) | Use host `host.docker.internal`, port `32400`. Allow Plex through Windows Firewall on private+public networks. |
-| **With VPN:** Sonarr can't reach qBittorrent   | Change Host to `gluetun` in Sonarr/Radarr → Download Clients (qBit's network is shared with gluetun). |
+| **With VPN:** Sonarr can't reach qBittorrent   | Change Host to `gluetun` in Sonarr/Radarr → Download Clients (qBit's network is shared with gluetun). If you're migrating an existing install, see [Migrating an existing install to gluetun](#migrating-an-existing-install-to-gluetun) for the API one-liner that patches both at once. |
 | **With VPN:** containers can't reach anything  | Your LAN subnet probably isn't in `LAN_SUBNET`. Check with `ipconfig` (Windows) or `ip a` (Linux), then update `.env` and `docker compose restart gluetun`. |
 | **With VPN:** torrents stuck at 0 B/s          | Provider blocks P2P on this server. Change `VPN_COUNTRIES`/`VPN_CITIES` to a P2P-allowed region in `.env`. |
 | **Telegram:** bot doesn't reply                | Wrong token. Verify with `docker logs searcharr` — `InvalidToken` means the value in `.env` is wrong or revoked. |
