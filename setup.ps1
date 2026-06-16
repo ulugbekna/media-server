@@ -43,8 +43,10 @@
 
 .PARAMETER Bootstrap
     Force REST-API auto-config of qBittorrent (set stable password, add
-    tv/movies categories), Prowlarr (register Sonarr + Radarr as Apps),
-    and Sonarr/Radarr (add qBittorrent download client + root folder).
+    tv/movies categories, whitelist trusted subnets so bans never hit
+    LAN/Docker clients), Prowlarr (register Sonarr + Radarr as Apps),
+    Sonarr/Radarr (add qBittorrent download client + root folder +
+    Plex auto-scan notifier if Plex is on this host).
     Default behavior: auto — runs on fresh installs only (so a re-run
     against an established stack doesn't fight your hand-tweaks).
 
@@ -451,11 +453,20 @@ if ($runBootstrap) {
                     temp_path         = "/data/torrents/incomplete"
                     temp_path_enabled = $true
                     web_ui_password   = $qbitNewPw
+                    # Auth-bypass for trusted subnets so containers (172.16/12),
+                    # the host loopback, and other LAN clients never get tarred
+                    # by qBit's brute-force ban. Without this, a few failed
+                    # logins from a forgotten password lock OUT every client on
+                    # those subnets — including the Docker network Sonarr/Radarr
+                    # talk to qBit through. Bans still apply to anyone outside
+                    # these ranges (i.e. random internet attackers).
+                    bypass_auth_subnet_whitelist_enabled = $true
+                    bypass_auth_subnet_whitelist         = "127.0.0.1/32,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8"
                 }
                 $body = "json=" + ($prefs | ConvertTo-Json -Compress)
                 Invoke-WebRequest -Uri "http://localhost:8080/api/v2/app/setPreferences" -Method Post `
                     -Body $body -WebSession $sess -UseBasicParsing | Out-Null
-                Write-OK "  qBittorrent: paths set, admin password rotated"
+                Write-OK "  qBittorrent: paths set, admin password rotated, LAN/Docker subnets auth-bypassed (lockout-proof)"
 
                 # Re-login with new password to create categories.
                 $sess2 = New-Object Microsoft.PowerShell.Commands.WebRequestSession
@@ -580,6 +591,73 @@ if ($runBootstrap) {
             }
         }
 
+        # --- 7a.4 Sonarr & Radarr: Plex auto-scan notifier -------------------
+        # Wires Sonarr/Radarr → Plex Connect so every import triggers a Plex
+        # library scan immediately (no waiting 1h for Plex's own discovery,
+        # no manual "Scan Library Files" click). Idempotent — skipped if a
+        # PlexServer notifier is already present or if Plex isn't reachable
+        # / no token can be found on this host. Token is read from the
+        # Windows HKCU registry (which is where the native PMS install
+        # stores its preferences — Preferences.xml only exists on
+        # Linux/macOS Plex installs).
+        function Get-PlexToken {
+            try {
+                $reg = Get-ItemProperty "HKCU:\Software\Plex, Inc.\Plex Media Server" -ErrorAction Stop
+                if ($reg.PlexOnlineToken) { return $reg.PlexOnlineToken }
+            } catch { }
+            return $null
+        }
+
+        function Test-PlexReachable {
+            try {
+                Invoke-RestMethod -Uri "http://127.0.0.1:32400/identity" -TimeoutSec 3 -UseBasicParsing | Out-Null
+                return $true
+            } catch { return $false }
+        }
+
+        function Add-ArrPlexNotifier([string]$app, [string]$key, [int]$port, [string]$plexToken) {
+            try {
+                $existing = Invoke-RestMethod -Uri "http://localhost:$port/api/v3/notification" `
+                    -Headers @{ "X-Api-Key" = $key } -UseBasicParsing
+                if ($existing | Where-Object { $_.implementation -eq "PlexServer" }) {
+                    Write-OK "  ${app}: Plex notifier already configured"; return
+                }
+            } catch { }
+
+            $payload = @{
+                name = "Plex"
+                implementation = "PlexServer"
+                implementationName = "Plex Media Server"
+                configContract = "PlexServerSettings"
+                onDownload = $true
+                onUpgrade  = $true
+                onRename   = $true
+                fields = @(
+                    @{ name = "host";          value = "host.docker.internal" },
+                    @{ name = "port";          value = 32400 },
+                    @{ name = "useSsl";        value = $false },
+                    @{ name = "authToken";     value = $plexToken },
+                    @{ name = "updateLibrary"; value = $true }
+                )
+                tags = @()
+            }
+            if ($app -eq "Sonarr") {
+                $payload.onImportComplete             = $true
+                $payload.onEpisodeFileDeleteForUpgrade = $true
+            } else {
+                $payload.onMovieFileDeleteForUpgrade = $true
+            }
+
+            try {
+                Invoke-RestMethod -Uri "http://localhost:$port/api/v3/notification" -Method Post `
+                    -Headers @{ "X-Api-Key" = $key } -ContentType "application/json" `
+                    -Body ($payload | ConvertTo-Json -Depth 6) -UseBasicParsing | Out-Null
+                Write-OK "  ${app}: Plex notifier added (auto-scan on import)"
+            } catch {
+                Write-WarnMsg "  ${app}: failed to add Plex notifier: $($_.Exception.Message)"
+            }
+        }
+
         if ($qbitNewPw) {
             Add-ArrDownloadClient "Sonarr" $sonarrKey 8989 "tv"
             Add-ArrDownloadClient "Radarr" $radarrKey 7878 "movies"
@@ -588,6 +666,18 @@ if ($runBootstrap) {
         }
         Add-ArrRootFolder "Sonarr" $sonarrKey 8989 "/data/media/tv"
         Add-ArrRootFolder "Radarr" $radarrKey 7878 "/data/media/movies"
+
+        # Plex auto-scan wiring — best-effort, skipped if Plex isn't here.
+        $plexToken = Get-PlexToken
+        if (-not $plexToken) {
+            Write-WarnMsg "  Plex notifier skipped: no Plex token in HKCU registry"
+            Write-WarnMsg "    (open Plex once, sign in with your Plex account, then re-run -Bootstrap)"
+        } elseif (-not (Test-PlexReachable)) {
+            Write-WarnMsg "  Plex notifier skipped: Plex Media Server not reachable on 127.0.0.1:32400"
+        } else {
+            Add-ArrPlexNotifier "Sonarr" $sonarrKey 8989 $plexToken
+            Add-ArrPlexNotifier "Radarr" $radarrKey 7878 $plexToken
+        }
 
         Write-OK "Bootstrap complete."
     }
