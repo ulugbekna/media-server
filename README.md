@@ -1027,10 +1027,22 @@ Host miniserver
     ServerAliveCountMax 4
 ```
 
-> Forwarding local port 443 needs `sudo ssh miniserver` because 443 is
-> privileged on the Mac side. Alternative: use a non-privileged local
-> port (`LocalForward 8443 localhost:443`) and browse to
-> `https://sonarr.miniserver.local:8443`.
+> Forwarding local port 443 needs `sudo` because 443 is privileged on
+> the Mac side. **Gotcha:** `sudo ssh miniserver` will fail with
+> `Could not resolve hostname miniserver` — sudo runs as root, which
+> reads root's `~/.ssh/config`, not yours. Two fixes (pick one):
+>
+> ```fish
+> # A. Point sudo at your user's ssh config:
+> sudo ssh -F ~/.ssh/config miniserver
+>
+> # B. Skip the alias entirely:
+> sudo ssh -L 443:127.0.0.1:443 youruser@192.168.1.42
+> ```
+>
+> If you'd rather not type `sudo` at all, use a non-privileged local
+> port: change the `LocalForward` to `8443 localhost:443` and browse
+> to `https://sonarr.miniserver.local:8443`.
 
 **3. Import Caddy's root CA** so the browser stops warning about the
 self-signed cert:
@@ -1591,6 +1603,7 @@ Telegram**.
 | Prowlarr: indexer was working, now red | Public trackers go down or change domains. Edit the indexer row, check for an updated URL; if there's no fix, disable the indexer and add an alternative. |
 | Bazarr: no subtitles being downloaded | Check Settings → Sonarr/Radarr show a green ✓ Test result. Then Settings → Languages → Languages Profiles must have at least one profile, and Settings → Sonarr/Radarr must have that profile selected under "Defined Language Profile". |
 | Bazarr: subtitle files exist but Plex doesn't show them | Plex picks up subtitle files at next scan. Wire Sonarr/Radarr → Connect → Plex (step 4c.5) so a scan happens on every import, or in Plex run Library → Scan Library Files. |
+| `sudo ssh miniserver` fails with `Could not resolve hostname miniserver` | `sudo` runs as root, which reads root's `~/.ssh/config` (empty), not yours. Use `sudo ssh -F ~/.ssh/config miniserver`, or skip the alias: `sudo ssh -L 443:127.0.0.1:443 you@<mini-ip>`. Only needed when forwarding privileged ports (≤1023, e.g. 443 for the Caddy proxy). |
 | qBittorrent password doesn't work next restart | The setup script's bootstrap rotates the temp password to a stable random one and prints it — keep that output. If you skipped bootstrap, change the temp password in **Settings → Web UI**; otherwise a new one is generated on every restart. |
 | qBittorrent says "your IP has been banned" / you forgot the password | The bootstrap whitelists loopback, Docker, and private-LAN subnets so the brute-force ban never applies to trusted clients. If you ran `--no-bootstrap` (or hand-edited qBit), re-run `setup.ps1 -Bootstrap` (`./setup.sh --bootstrap`) — it'll rotate the password and re-apply the whitelist. To manually unblock: stop the container, edit `config/qbittorrent/qBittorrent/qBittorrent.conf`, clear `WebUI\BannedIPs=`, then start it back up. |
 | Overseerr won't save Sonarr/Radarr connection  | Add at least one Root Folder + Quality Profile in Sonarr/Radarr first, then retry the Overseerr wizard. |
