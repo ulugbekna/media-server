@@ -945,7 +945,10 @@ if ($Proxy) {
     Write-Host ""
     Write-Host "  Setup steps on your Mac (one-time):"
     Write-Host "    1. Add the hostnames to /etc/hosts so they resolve to 127.0.0.1."
-    Write-Host "    2. SSH-tunnel port 443 from your Mac: ssh -L 443:localhost:443 miniserver"
+    Write-Host "    2. SSH-tunnel port 443 from your Mac. Two options:"
+    Write-Host "         sudo ssh -F ~/.ssh/config miniserver       # uses your alias"
+    Write-Host "         sudo ssh -L 443:127.0.0.1:443 you@<mini>   # no alias needed"
+    Write-Host "       (sudo runs as root which ignores YOUR ~/.ssh/config — that's why -F.)"
     Write-Host "    3. Import Caddy's root CA so the browser stops warning."
     Write-Host "    See README 'Reverse proxy (Caddy)' for the exact commands."
 }
