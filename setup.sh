@@ -302,13 +302,17 @@ prowlarr_key="$(extract_arr_key "$CONFIG_ROOT/prowlarr/config.xml")"
 # 6a. Bootstrap — REST-API auto-config so step 4 of README is mostly already done
 # ----------------------------------------------------------------------------
 # Eliminates ~15 minutes of UI clicking after first boot:
-#   - qBittorrent: change temp password to a stable one, set categories
+#   - qBittorrent: change temp password to a stable one, set categories,
+#                  whitelist trusted subnets (loopback / Docker / LAN) so
+#                  the brute-force ban can never lock us out from inside
 #                  (paths already set via WEBUI_PORT env; nothing to do there)
 #   - Prowlarr:    register Sonarr + Radarr as Apps (so Prowlarr auto-syncs
 #                  indexers into them — eliminates the manual "Apps → Add"
 #                  step in README 4b)
 #   - Sonarr & Radarr: add qBittorrent as download client, add root folder
-#                      under /data/media/ (eliminates README 4c steps 2 + 3)
+#                      under /data/media/, and wire Plex Connect so every
+#                      import triggers an immediate Plex library scan
+#                      (eliminates README 4c steps 2, 3, and 5).
 # Idempotent: each step GETs first and skips if already configured.
 # Honest scope: we DO NOT add indexers (you pick), DO NOT touch Bazarr
 # (provider creds are your account), DO NOT touch Overseerr (Plex OAuth
@@ -370,13 +374,21 @@ print('json=' + json.dumps({
   "temp_path": "/data/torrents/incomplete",
   "temp_path_enabled": True,
   "web_ui_password": "$qbit_new_pw",
+  # Auth-bypass for trusted subnets so containers (172.16/12), the
+  # host loopback, and other LAN clients never get tarred by qBit's
+  # brute-force ban. Without this, a few failed logins (e.g. from a
+  # forgotten password) lock OUT every client on those subnets —
+  # including the Docker network Sonarr/Radarr talk to qBit through.
+  # Bans still apply to anyone outside these ranges.
+  "bypass_auth_subnet_whitelist_enabled": True,
+  "bypass_auth_subnet_whitelist": "127.0.0.1/32,172.16.0.0/12,192.168.0.0/16,10.0.0.0/8",
 }))
 PY
 )
                 if curl -fsS -b "$qbit_jar" -o /dev/null \
                     --data "$qbit_payload" \
                     http://localhost:8080/api/v2/app/setPreferences 2>/dev/null; then
-                    green "  qBittorrent: paths set, admin password rotated"
+                    green "  qBittorrent: paths set, admin password rotated, LAN/Docker subnets auth-bypassed (lockout-proof)"
                 else
                     yellow "  qBittorrent: setPreferences failed (config will be defaulted)"
                     qbit_new_pw=""
@@ -532,6 +544,89 @@ PY
         fi
         add_arr_root Sonarr "$sonarr_key" 8989 "/data/media/tv"
         add_arr_root Radarr "$radarr_key" 7878 "/data/media/movies"
+
+        # --- 6a.4 Sonarr & Radarr: Plex auto-scan notifier -------------------
+        # Wires Sonarr/Radarr → Plex Connect so every import triggers a Plex
+        # library scan immediately (no waiting 1h for Plex's own discovery,
+        # no manual "Scan Library Files" click). Idempotent — skipped if a
+        # PlexServer notifier is already present, or if Plex isn't reachable
+        # on this host, or if no token can be located. Plex stores its token
+        # in different spots per OS, hence the path probe.
+        get_plex_token() {
+            local prefs candidates=(
+                "$HOME/Library/Application Support/Plex Media Server/Preferences.xml"  # macOS
+                "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml"  # Linux native
+                "$HOME/.config/Plex Media Server/Preferences.xml"  # some Linux distros
+            )
+            for prefs in "${candidates[@]}"; do
+                if [ -r "$prefs" ]; then
+                    grep -oE 'PlexOnlineToken="[^"]+"' "$prefs" 2>/dev/null \
+                        | head -n1 | sed -E 's/.*"([^"]+)"/\1/' \
+                        && return 0
+                fi
+            done
+            return 1
+        }
+
+        plex_reachable() {
+            curl -fsS --max-time 3 -o /dev/null http://127.0.0.1:32400/identity 2>/dev/null
+        }
+
+        add_arr_plex() {
+            local app="$1" key="$2" port="$3" token="$4"
+            local existing
+            existing=$(curl -fsS -H "X-Api-Key: $key" "http://localhost:$port/api/v3/notification" 2>/dev/null \
+                | python3 -c "import sys,json; print(' '.join(n['implementation'] for n in json.load(sys.stdin)))" \
+                2>/dev/null || echo "")
+            if echo " $existing " | grep -q " PlexServer "; then
+                green "  $app: Plex notifier already configured"; return
+            fi
+            local payload
+            payload=$(python3 - <<PY
+import json
+p = {
+  "name": "Plex",
+  "implementation": "PlexServer",
+  "implementationName": "Plex Media Server",
+  "configContract": "PlexServerSettings",
+  "onDownload": True, "onUpgrade": True, "onRename": True,
+  "fields": [
+    {"name":"host", "value":"host.docker.internal"},
+    {"name":"port", "value":32400},
+    {"name":"useSsl", "value":False},
+    {"name":"authToken", "value":"$token"},
+    {"name":"updateLibrary", "value":True},
+  ],
+  "tags": []
+}
+if "$app" == "Sonarr":
+    p["onImportComplete"] = True
+    p["onEpisodeFileDeleteForUpgrade"] = True
+else:
+    p["onMovieFileDeleteForUpgrade"] = True
+print(json.dumps(p))
+PY
+)
+            if curl -fsS -o /dev/null -X POST \
+                -H "X-Api-Key: $key" -H "Content-Type: application/json" \
+                --data "$payload" \
+                "http://localhost:$port/api/v3/notification" 2>/dev/null; then
+                green "  $app: Plex notifier added (auto-scan on import)"
+            else
+                yellow "  $app: failed to add Plex notifier"
+            fi
+        }
+
+        plex_token=$(get_plex_token || true)
+        if [ -z "$plex_token" ]; then
+            yellow "  Plex notifier skipped: no Plex token found in Preferences.xml"
+            yellow "    (open Plex once, sign in with your Plex account, then re-run --bootstrap)"
+        elif ! plex_reachable; then
+            yellow "  Plex notifier skipped: Plex Media Server not reachable on 127.0.0.1:32400"
+        else
+            add_arr_plex Sonarr "$sonarr_key" 8989 "$plex_token"
+            add_arr_plex Radarr "$radarr_key" 7878 "$plex_token"
+        fi
 
         green "Bootstrap complete."
     fi

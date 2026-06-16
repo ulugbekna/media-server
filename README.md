@@ -207,12 +207,18 @@ menu and click the tray icon → *Open Plex*).
 >
 > - rotate qBittorrent's temp password to a stable random one
 >   (printed in the setup summary), set its download paths, create
->   `tv` + `movies` categories
+>   `tv` + `movies` categories, and whitelist loopback / Docker /
+>   private-LAN subnets so the brute-force ban can never lock you (or
+>   Sonarr/Radarr) out from inside
 > - register Sonarr + Radarr as Apps in Prowlarr (so any indexer you
 >   add later auto-syncs to both)
 > - add qBittorrent as a download client in Sonarr + Radarr (with the
 >   right host: `qbittorrent`, or `gluetun` if you used `--vpn`)
 > - add `/data/media/tv` and `/data/media/movies` as root folders
+> - wire **Plex Connect** in Sonarr + Radarr so every import triggers
+>   a Plex library scan immediately (skipped if Plex Media Server isn't
+>   installed on this host — the script reads your Plex auth token from
+>   the registry, so finish Plex's first-run wizard first)
 >
 > What's still **manual** (because they need your input, your account,
 > or your taste):
@@ -409,13 +415,14 @@ repo's commit and Jackett will come back with the same config.
 Both are configured identically — Radarr just stores movies instead of TV.
 
 > **✅ Auto-configured by bootstrap.** On a fresh install the setup
-> script does steps 1, 2, and 3 below for you via Sonarr/Radarr's REST
-> APIs. The indexers, qBittorrent download client (with `tv`/`movies`
-> categories), and `/data/media/tv` + `/data/media/movies` root folders
-> will all be in place when you first open the UI. Verify:
-> Settings → Indexers, Settings → Download Clients, Settings → Media
-> Management → Root Folders. Then skip to step 4 (quality profiles) and
-> step 5 (Plex Connect) — those are your decisions.
+> script does steps 1, 2, 3, and 5 below for you via Sonarr/Radarr's
+> REST APIs. The indexers, qBittorrent download client (with
+> `tv`/`movies` categories), `/data/media/tv` + `/data/media/movies`
+> root folders, and the Plex auto-scan notifier will all be in place
+> when you first open the UI. Verify: Settings → Indexers,
+> Settings → Download Clients, Settings → Media Management → Root
+> Folders, Settings → Connect (Plex Media Server row). Then skip to
+> step 4 (quality profiles) — that's your decision.
 
 If you opted out of bootstrap, do them by hand:
 
@@ -439,7 +446,19 @@ If you opted out of bootstrap, do them by hand:
 5. *(Optional)* **Settings → Connect → Plex Media Server** to auto-refresh
    the Plex library when downloads finish. Host: `host.docker.internal`
    (Windows / Mac Docker Desktop reaches your native Plex install through
-   this magic hostname). Port: `32400`. Click **Authenticate with Plex.tv**.
+   this magic hostname; on Linux engine, the `extra_hosts` block in
+   `docker-compose.yml` makes the same name work). Port: `32400`. Click
+   **Authenticate with Plex.tv**.
+
+   > The bootstrap step wires this up for you automatically — but only if
+   > Plex Media Server is running on the same host AND you've completed
+   > Plex's first-run wizard (so a Plex auth token exists in
+   > `HKCU\Software\Plex, Inc.\Plex Media Server` on Windows, or in
+   > `~/Library/Application Support/Plex Media Server/Preferences.xml` on
+   > macOS, or `/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml`
+   > on Linux). If you skipped Plex during first setup, finish [step 3](#3-finish-the-plex-first-run-wizard)
+   > and re-run `setup.ps1 -Bootstrap` (or `./setup.sh --bootstrap`) to add
+   > the notifier without redoing the rest.
 
 Do **both Sonarr and Radarr** before moving to Overseerr — Overseerr's
 wizard won't accept them otherwise.
@@ -1572,11 +1591,12 @@ Telegram**.
 | Prowlarr: indexer was working, now red | Public trackers go down or change domains. Edit the indexer row, check for an updated URL; if there's no fix, disable the indexer and add an alternative. |
 | Bazarr: no subtitles being downloaded | Check Settings → Sonarr/Radarr show a green ✓ Test result. Then Settings → Languages → Languages Profiles must have at least one profile, and Settings → Sonarr/Radarr must have that profile selected under "Defined Language Profile". |
 | Bazarr: subtitle files exist but Plex doesn't show them | Plex picks up subtitle files at next scan. Wire Sonarr/Radarr → Connect → Plex (step 4c.5) so a scan happens on every import, or in Plex run Library → Scan Library Files. |
-| qBittorrent password doesn't work next restart | You must change the temp password in **Settings → Web UI**; otherwise a new one is generated.         |
+| qBittorrent password doesn't work next restart | The setup script's bootstrap rotates the temp password to a stable random one and prints it — keep that output. If you skipped bootstrap, change the temp password in **Settings → Web UI**; otherwise a new one is generated on every restart. |
+| qBittorrent says "your IP has been banned" / you forgot the password | The bootstrap whitelists loopback, Docker, and private-LAN subnets so the brute-force ban never applies to trusted clients. If you ran `--no-bootstrap` (or hand-edited qBit), re-run `setup.ps1 -Bootstrap` (`./setup.sh --bootstrap`) — it'll rotate the password and re-apply the whitelist. To manually unblock: stop the container, edit `config/qbittorrent/qBittorrent/qBittorrent.conf`, clear `WebUI\BannedIPs=`, then start it back up. |
 | Overseerr won't save Sonarr/Radarr connection  | Add at least one Root Folder + Quality Profile in Sonarr/Radarr first, then retry the Overseerr wizard. |
 | Sonarr error "Remote path mapping"             | qBittorrent and Sonarr both see `/data/torrents/complete`, so no mapping is needed — make sure both root folders match. |
-| Plex doesn't see new files                     | In Plex: Library → Scan Library Files. Or wire **Sonarr/Radarr → Connect → Plex** to auto-refresh.    |
-| Plex unreachable from Sonarr/Radarr (Docker → native Plex) | Use host `host.docker.internal`, port `32400`. Allow Plex through Windows Firewall on private+public networks. |
+| Plex doesn't see new files                     | The bootstrap wires Sonarr/Radarr → Plex Connect so a scan fires on every import. If you opted out, in Plex run Library → Scan Library Files, then add the notifier by hand (step 4c.5) or re-run `setup.ps1 -Bootstrap`. The bootstrap is idempotent and will only add what's missing. |
+| Plex unreachable from Sonarr/Radarr (Docker → native Plex) | Use host `host.docker.internal`, port `32400`. The `extra_hosts: ["host.docker.internal:host-gateway"]` block in `docker-compose.yml` makes that name resolve on Linux too (Docker Desktop maps it automatically). Allow Plex through Windows Firewall on private+public networks. |
 | **With VPN:** Sonarr can't reach qBittorrent   | Change Host to `gluetun` in Sonarr/Radarr → Download Clients (qBit's network is shared with gluetun). If you're migrating an existing install, see [Migrating an existing install to gluetun](#migrating-an-existing-install-to-gluetun) for the API one-liner that patches both at once. |
 | **With VPN:** containers can't reach anything  | Your LAN subnet probably isn't in `LAN_SUBNET`. Check with `ipconfig` (Windows) or `ip a` (Linux), then update `.env` and `docker compose restart gluetun`. |
 | **With VPN:** torrents stuck at 0 B/s          | Provider blocks P2P on this server. Change `VPN_COUNTRIES`/`VPN_CITIES` to a P2P-allowed region in `.env`. |

@@ -122,6 +122,13 @@ services:
       - ${DATA_ROOT}:/data
     ports:
       - "127.0.0.1:8989:8989"
+    # Make 'host.docker.internal' reach the host kernel's gateway so the
+    # Plex notifier (wired by setup.ps1 / setup.sh bootstrap) can talk to a
+    # natively-installed Plex Media Server on the same machine. Docker
+    # Desktop on Win/Mac sets this automatically; on Linux engine it doesn't
+    # unless we ask for it.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8989/ping || exit 1"]
       interval: 30s
@@ -148,6 +155,9 @@ services:
       - ${DATA_ROOT}:/data
     ports:
       - "127.0.0.1:7878:7878"
+    # See sonarr above — same reason for host.docker.internal mapping.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:7878/ping || exit 1"]
       interval: 30s
