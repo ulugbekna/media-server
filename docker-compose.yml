@@ -70,7 +70,8 @@ services:
     ports:
       - "127.0.0.1:8191:8191"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8191/ | grep -q FlareSolverr || exit 1"]
+      # The flaresolverr image ships curl but not wget, so use curl here.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8191/ | grep -q FlareSolverr || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
