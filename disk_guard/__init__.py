@@ -1,0 +1,1 @@
+"""Media disk guard package."""

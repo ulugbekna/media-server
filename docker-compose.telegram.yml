@@ -35,3 +35,41 @@ services:
         condition: service_healthy
       radarr:
         condition: service_healthy
+
+  disk-guard:
+    # Reuse Searcharr's pinned Python image; the guard itself uses stdlib only.
+    # tag: toddrob/searcharr:latest
+    image: toddrob/searcharr@sha256:a00fd7e02ea6ef0d7c6181fcf7f33929db0d9bda9283f871937d72c0113b1f48
+    container_name: disk-guard
+    entrypoint: ["python3", "/opt/disk-guard/guard.py"]
+    command: ["--poll-seconds", "60"]
+    environment:
+      - TZ=${TZ:-UTC}
+      - PYTHONDONTWRITEBYTECODE=1
+      # Prefer gluetun when the VPN override is active; fall back to the
+      # regular qBittorrent service for Telegram-only deployments.
+      - DISK_GUARD_QBITTORRENT_URLS=${DISK_GUARD_QBITTORRENT_URLS:-http://gluetun:8080,http://qbittorrent:8080}
+    volumes:
+      - ${DATA_ROOT}:/data:ro
+      - ${CONFIG_ROOT}/searcharr/data:/searcharr:ro
+      - ${CONFIG_ROOT}/disk-guard:/state
+      - ./disk_guard/guard.py:/opt/disk-guard/guard.py:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,nosuid,nodev,noexec
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python3", "/opt/disk-guard/guard.py", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    depends_on:
+      qbittorrent:
+        condition: service_healthy
+      searcharr:
+        condition: service_started

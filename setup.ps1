@@ -156,6 +156,7 @@ $folders = @(
     "$ConfigRoot\overseerr",
     "$ConfigRoot\searcharr\data",
     "$ConfigRoot\searcharr\logs",
+    "$ConfigRoot\disk-guard",
     "$ConfigRoot\recyclarr",
     "$ConfigRoot\caddy\data",
     "$ConfigRoot\caddy\config"
@@ -731,11 +732,15 @@ if ($Telegram) {
         [System.IO.File]::WriteAllText($searcharrSettings, $rendered, [System.Text.UTF8Encoding]::new($false))
         Write-OK "Wrote $searcharrSettings"
 
-        Write-Step "Starting Searcharr"
+        Write-Step "Starting Searcharr and disk guard"
         $tgArgs = @("compose", "-f", "docker-compose.yml")
         if ($Vpn) { $tgArgs += @("-f", "docker-compose.vpn.yml") }
-        $tgArgs += @("-f", "docker-compose.telegram.yml", "up", "-d", "searcharr")
+        $tgArgs += @("-f", "docker-compose.telegram.yml", "up", "-d", "searcharr", "disk-guard")
         & docker @tgArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-ErrMsg "Starting Searcharr and disk guard failed."
+            exit 1
+        }
     }
 }
 
