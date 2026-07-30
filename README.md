@@ -14,6 +14,7 @@ A drop-in, one-command Docker setup for the stack from
 | Plex         | Media server (installed natively)    | http://localhost:32400  |
 | Gluetun      | (optional) VPN for qBittorrent       | —                       |
 | Searcharr    | (optional) Telegram bot for requests | (Telegram chat)         |
+| Disk guard   | (with Telegram) low-space protection | (background service)    |
 
 > The dev.to article uses **Jackett** as the indexer proxy. This stack uses
 > **Prowlarr** — Jackett's modern successor from the same *arr family —
@@ -734,6 +735,45 @@ The setup script verifies on every run that `DATA_ROOT/torrents` and
 `DATA_ROOT/media` are on the same filesystem and refuses to proceed if
 they aren't — silent fallback to copying is exactly the failure mode
 hardlinks are meant to prevent.
+
+#### Automatic low-space guard (with Telegram)
+
+Enabling `docker-compose.telegram.yml` also starts `disk-guard`. It checks
+free space on `/data` once a minute and applies this fixed safety policy:
+
+- **Below 20 GiB free:** call qBittorrent v5's stop API for active,
+  incomplete download-side torrents (including queued/stalled downloads).
+  Completed and seeding torrents are never targeted, and nothing is deleted.
+- **During the same incident:** keep stopping newly started/resumed incomplete
+  downloads, but send each authorized Searcharr user only one warning.
+- **At 25 GiB free:** send one recovery message and reset the persisted
+  incident. The recovery message explicitly says downloads remain stopped.
+- **Never auto-resume:** manually resume only the downloads you want after
+  confirming enough space is available.
+
+Incident and notification state is stored atomically in
+`<ConfigRoot>/disk-guard/incident-state.json`, so container/host restarts do
+not repeat an alert. Recipient IDs are represented there only by hashes. The
+guard reads Searcharr's existing token and authorized-user database through a
+read-only mount; it does not copy either into environment variables or logs.
+Repeated HTTP failures are retried with bounded backoff, then logged, and a
+stale successful-check heartbeat makes the container unhealthy.
+
+Validate the live integrations without forcing the disk below the threshold:
+
+```powershell
+# Read free space, qBittorrent candidates, and Searcharr recipients; change nothing.
+docker compose -f docker-compose.yml -f docker-compose.vpn.yml -f docker-compose.telegram.yml run --rm --no-deps disk-guard --dry-run
+
+# Send an explicit test message; do not touch torrents or incident state.
+docker compose -f docker-compose.yml -f docker-compose.vpn.yml -f docker-compose.telegram.yml run --rm --no-deps disk-guard --test-alert
+
+# Follow operational logs (counts only; no token, user IDs, names, or hashes).
+docker logs -f disk-guard
+```
+
+If you do not use the VPN override, omit `docker-compose.vpn.yml`; the guard
+falls back from `http://gluetun:8080` to `http://qbittorrent:8080`.
 
 #### Verifying it works (after you've imported something)
 
@@ -1548,6 +1588,8 @@ The script:
   no LAN IPs).
 - Waits for both services to pass their `/ping` healthchecks before launching
   Searcharr, which does not retry a failed client initialization.
+- Starts the low-space disk guard documented under
+  [Automatic low-space guard](#automatic-low-space-guard-with-telegram).
 - Prints the bot password at the end. Save it.
 
 ### 4. Use the bot
@@ -1649,6 +1691,9 @@ Open an issue if you'd like this added as a first-class option.
 - **The bot token equals full control of the bot.** Treat it like a password.
   If leaked, send `/revoke` to BotFather to invalidate it, then update `.env`
   and re-run setup.
+- The disk guard reads the token and enrolled user IDs from Searcharr's
+  read-only data mount. It logs only recipient/torrent counts, never those
+  secrets or identifiers.
 - **Searcharr's data folder contains the token in plaintext** (`settings.py`).
   It lives under `config/searcharr/data/`, which is git-ignored. The setup
   script also `chmod 600`s it on Unix.
@@ -1677,6 +1722,7 @@ Telegram**.
 | Mini-PC unreachable after a few hours / overnight | Windows put it to sleep, hibernated it, or the network adapter powered down. See [Don't accidentally lock yourself out](#5-dont-accidentally-lock-yourself-out) — the `powercfg` block disables all of them. |
 | `setup.ps1` blocked by execution policy        | `powershell -ExecutionPolicy Bypass -File .\setup.ps1`                                                |
 | Sonarr/Radarr can't reach Prowlarr or qBittorrent | Use the **service name** as the hostname (`prowlarr`, `qbittorrent`), not `localhost` or `127.0.0.1`. |
+| `disk-guard` is unhealthy | Run `docker logs disk-guard`. HTTP 403 means qBittorrent did not trust the Compose network; other explicit errors identify unavailable qBittorrent, Telegram, Searcharr DB, or state storage. The guard does not auto-resume anything after recovery. |
 | `localhost:8989` / `localhost:7878` keeps opening a **native** Sonarr/Radarr you installed earlier (not the Docker container) | A native install owns the port; Docker silently fails to publish. Fix: [Already running Sonarr/Radarr natively on this machine?](#already-running-sonarrradarr-natively-on-this-machine) |
 | Can't reach Sonarr/Radarr/Prowlarr/qBittorrent from another LAN device | By design — admin UIs are bound to `127.0.0.1` on the mini-PC. Use the SSH tunnel pattern in [Remote management](#remote-management-ssh). |
 | Prowlarr: indexer red, error "Cloudflare challenge" | Add the FlareSolverr container (see Prowlarr section), then in Prowlarr → Settings → Indexers → Add Indexer Proxy → FlareSolverr with host `http://flaresolverr:8191/`. |
