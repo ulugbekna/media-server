@@ -1546,6 +1546,8 @@ The script:
 - Wires Searcharr to Sonarr at `http://sonarr:8989` and Radarr at
   `http://radarr:7878` via the internal Docker network (no host networking,
   no LAN IPs).
+- Waits for both services to pass their `/ping` healthchecks before launching
+  Searcharr, which does not retry a failed client initialization.
 - Prints the bot password at the end. Save it.
 
 ### 4. Use the bot

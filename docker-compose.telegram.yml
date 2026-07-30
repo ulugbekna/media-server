@@ -13,8 +13,9 @@
 #      keys it already extracts from Sonarr/Radarr.
 #   4. In Telegram, message your bot:  /start <password>
 #
-# Note: Searcharr talks to Sonarr/Radarr by Docker service name on the
-# default Compose network — no host networking required.
+# Searcharr initializes its Sonarr/Radarr clients only once at startup, so it
+# waits for both services' /ping healthchecks before launching. It then talks
+# to them by Docker service name on the default Compose network.
 # =============================================================================
 
 services:
@@ -30,5 +31,7 @@ services:
       - TZ=${TZ:-UTC}
     restart: unless-stopped
     depends_on:
-      - sonarr
-      - radarr
+      sonarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy
