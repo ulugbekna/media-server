@@ -22,8 +22,8 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 
 
 GIB = 1024**3
-LOW_SPACE_BYTES = 20 * GIB
-RECOVERY_BYTES = 25 * GIB
+LOW_SPACE_BYTES = 5 * GIB
+RECOVERY_BYTES = 10 * GIB
 DEFAULT_POLL_SECONDS = 60
 DEFAULT_HEALTH_MAX_AGE_SECONDS = 300
 DEFAULT_HTTP_TIMEOUT_SECONDS = 10
@@ -655,8 +655,8 @@ class DiskGuard:
     ) -> str:
         prefix = (
             "WARNING: Media storage is critically low. "
-            f"/data has {format_gib(free_bytes)} free, below the 20 GiB "
-            "safety threshold. "
+            f"/data has {format_gib(free_bytes)} free, below the "
+            f"{format_gib(LOW_SPACE_BYTES)} safety threshold. "
         )
         if stop_error is not None:
             action = (
@@ -688,7 +688,8 @@ class DiskGuard:
         return (
             "RECOVERY: Media storage has recovered. "
             f"/data reached {format_gib(recovery_free_bytes)} free, meeting "
-            f"the 25 GiB recovery threshold, and currently has "
+            f"the {format_gib(RECOVERY_BYTES)} recovery threshold, and "
+            "currently has "
             f"{format_gib(current_free_bytes)} free. qBittorrent downloads "
             "remain stopped and require manual resume."
         )
@@ -1000,8 +1001,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
 
         LOGGER.info(
-            "starting disk guard: stop below 20 GiB, recover at 25 GiB, "
+            "starting disk guard: stop below %s, recover at %s, "
             "poll every %d seconds",
+            format_gib(LOW_SPACE_BYTES),
+            format_gib(RECOVERY_BYTES),
             args.poll_seconds,
         )
         while True:
