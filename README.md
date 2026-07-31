@@ -741,12 +741,12 @@ hardlinks are meant to prevent.
 Enabling `docker-compose.telegram.yml` also starts `disk-guard`. It checks
 free space on `/data` once a minute and applies this fixed safety policy:
 
-- **Below 20 GiB free:** call qBittorrent v5's stop API for active,
+- **Below 5 GiB free:** call qBittorrent v5's stop API for active,
   incomplete download-side torrents (including queued/stalled downloads).
   Completed and seeding torrents are never targeted, and nothing is deleted.
 - **During the same incident:** keep stopping newly started/resumed incomplete
   downloads, but send each authorized Searcharr user only one warning.
-- **At 25 GiB free:** send one recovery message and reset the persisted
+- **At 10 GiB free:** send one recovery message and reset the persisted
   incident. The recovery message explicitly says downloads remain stopped.
 - **Never auto-resume:** manually resume only the downloads you want after
   confirming enough space is available.

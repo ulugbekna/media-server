@@ -72,6 +72,8 @@ class RecordingTransport:
 
 class DiskGuardTests(unittest.TestCase):
     def test_threshold_and_recovery_hysteresis(self):
+        self.assertEqual(LOW_SPACE_BYTES, 5 * GIB)
+        self.assertEqual(RECOVERY_BYTES, 10 * GIB)
         self.assertEqual(
             incident_phase(LOW_SPACE_BYTES - 1, False), "enter"
         )
@@ -173,7 +175,7 @@ class DiskGuardTests(unittest.TestCase):
         )
 
     def test_incident_state_throttles_alerts_and_resets_after_recovery(self):
-        free_bytes = [19 * GIB]
+        free_bytes = [LOW_SPACE_BYTES - GIB]
         qbittorrent = FakeQBittorrent()
         notifier = FakeNotifier()
 
@@ -193,27 +195,29 @@ class DiskGuardTests(unittest.TestCase):
             self.assertEqual(guard.run_once(), "enter")
             self.assertEqual(guard.run_once(), "active")
             self.assertEqual(len(notifier.messages), 1)
+            self.assertIn("5.0 GiB safety threshold", notifier.messages[0])
             self.assertEqual(qbittorrent.calls, 2)
             active_state = state_store.load()
             self.assertTrue(active_state.active)
             self.assertTrue(active_state.warning_complete)
 
-            free_bytes[0] = 25 * GIB
+            free_bytes[0] = RECOVERY_BYTES
             self.assertEqual(guard.run_once(), "recover")
             self.assertEqual(len(notifier.messages), 2)
+            self.assertIn("10.0 GiB recovery threshold", notifier.messages[1])
             self.assertIn("require manual resume", notifier.messages[1])
             recovered_state = state_store.load()
             self.assertFalse(recovered_state.active)
             self.assertFalse(recovered_state.warning_complete)
             self.assertEqual(recovered_state.warning_recipients, set())
 
-            free_bytes[0] = 19 * GIB
+            free_bytes[0] = LOW_SPACE_BYTES - GIB
             self.assertEqual(guard.run_once(), "enter")
             self.assertEqual(len(notifier.messages), 3)
             self.assertEqual(qbittorrent.calls, 3)
 
     def test_recovery_notification_retries_without_reopening_incident(self):
-        free_bytes = [19 * GIB]
+        free_bytes = [LOW_SPACE_BYTES - GIB]
         with tempfile.TemporaryDirectory() as temporary_directory:
             state_store = StateStore(
                 Path(temporary_directory) / "incident-state.json"
@@ -228,7 +232,7 @@ class DiskGuardTests(unittest.TestCase):
             )
 
             self.assertEqual(guard.run_once(), "enter")
-            free_bytes[0] = 25 * GIB
+            free_bytes[0] = RECOVERY_BYTES
             with self.assertRaisesRegex(
                 GuardError, "recovery notification failed"
             ):
