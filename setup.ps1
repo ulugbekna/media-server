@@ -45,8 +45,9 @@
     Force REST-API auto-config of qBittorrent (set stable password, add
     tv/movies categories, whitelist trusted subnets so bans never hit
     LAN/Docker clients), Prowlarr (register Sonarr + Radarr as Apps),
-    Sonarr/Radarr (add qBittorrent download client + root folder +
-    Plex auto-scan notifier if Plex is on this host).
+    Sonarr/Radarr (add qBittorrent download client + root folder, enable
+    hardlinks without a duplicate import free-space check, and add a Plex
+    auto-scan notifier if Plex is on this host).
     Default behavior: auto — runs on fresh installs only (so a re-run
     against an established stack doesn't fight your hand-tweaks).
 
@@ -667,6 +668,29 @@ if ($runBootstrap) {
         }
         Add-ArrRootFolder "Sonarr" $sonarrKey 8989 "/data/media/tv"
         Add-ArrRootFolder "Radarr" $radarrKey 7878 "/data/media/movies"
+
+        # qBittorrent has already allocated completed downloads on /data. The
+        # Arr default precheck otherwise demands the full file size a second
+        # time before it attempts the hardlink, blocking valid low-space
+        # imports. This is safe because preflight requires torrents and media
+        # to share one filesystem.
+        function Set-ArrHardlinkImportPolicy([string]$app, [string]$key, [int]$port) {
+            try {
+                $uri = "http://localhost:$port/api/v3/config/mediamanagement"
+                $config = Invoke-RestMethod -Uri $uri `
+                    -Headers @{ "X-Api-Key" = $key } -UseBasicParsing
+                $config.copyUsingHardlinks = $true
+                $config.skipFreeSpaceCheckWhenImporting = $true
+                Invoke-RestMethod -Uri "$uri/$($config.id)" -Method Put `
+                    -Headers @{ "X-Api-Key" = $key } -ContentType "application/json" `
+                    -Body ($config | ConvertTo-Json -Depth 10) -UseBasicParsing | Out-Null
+                Write-OK "  ${app}: hardlinks enabled; duplicate import free-space check disabled"
+            } catch {
+                Write-WarnMsg "  ${app}: failed to configure hardlink import policy: $($_.Exception.Message)"
+            }
+        }
+        Set-ArrHardlinkImportPolicy "Sonarr" $sonarrKey 8989
+        Set-ArrHardlinkImportPolicy "Radarr" $radarrKey 7878
 
         # Plex auto-scan wiring — best-effort, skipped if Plex isn't here.
         $plexToken = Get-PlexToken

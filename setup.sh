@@ -311,7 +311,8 @@ prowlarr_key="$(extract_arr_key "$CONFIG_ROOT/prowlarr/config.xml")"
 #                  indexers into them — eliminates the manual "Apps → Add"
 #                  step in README 4b)
 #   - Sonarr & Radarr: add qBittorrent as download client, add root folder
-#                      under /data/media/, and wire Plex Connect so every
+#                      under /data/media/, enable hardlinks without a duplicate
+#                      import free-space check, and wire Plex Connect so every
 #                      import triggers an immediate Plex library scan
 #                      (eliminates README 4c steps 2, 3, and 5).
 # Idempotent: each step GETs first and skips if already configured.
@@ -545,6 +546,42 @@ PY
         fi
         add_arr_root Sonarr "$sonarr_key" 8989 "/data/media/tv"
         add_arr_root Radarr "$radarr_key" 7878 "/data/media/movies"
+
+        # qBittorrent has already allocated completed downloads on /data. The
+        # Arr default precheck otherwise demands the full file size a second
+        # time before it attempts the hardlink, blocking valid low-space
+        # imports. This is safe because preflight requires torrents and media
+        # to share one filesystem.
+        configure_arr_hardlink_imports() {
+            local app="$1" key="$2" port="$3"
+            local config payload config_id
+            if ! config=$(curl -fsS -H "X-Api-Key: $key" \
+                "http://localhost:$port/api/v3/config/mediamanagement" 2>/dev/null); then
+                yellow "  $app: failed to read media-management config"
+                return
+            fi
+            if ! payload=$(printf '%s' "$config" | python3 -c \
+                'import json,sys; c=json.load(sys.stdin); c["copyUsingHardlinks"]=True; c["skipFreeSpaceCheckWhenImporting"]=True; print(json.dumps(c))'); then
+                yellow "  $app: failed to prepare hardlink import config"
+                return
+            fi
+            config_id=$(printf '%s' "$config" | python3 -c \
+                'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null || true)
+            if [ -z "$config_id" ]; then
+                yellow "  $app: media-management config has no id"
+                return
+            fi
+            if curl -fsS -o /dev/null -X PUT \
+                -H "X-Api-Key: $key" -H "Content-Type: application/json" \
+                --data "$payload" \
+                "http://localhost:$port/api/v3/config/mediamanagement/$config_id" 2>/dev/null; then
+                green "  $app: hardlinks enabled; duplicate import free-space check disabled"
+            else
+                yellow "  $app: failed to configure hardlink import policy"
+            fi
+        }
+        configure_arr_hardlink_imports Sonarr "$sonarr_key" 8989
+        configure_arr_hardlink_imports Radarr "$radarr_key" 7878
 
         # --- 6a.4 Sonarr & Radarr: Plex auto-scan notifier -------------------
         # Wires Sonarr/Radarr → Plex Connect so every import triggers a Plex
