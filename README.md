@@ -736,6 +736,13 @@ The setup script verifies on every run that `DATA_ROOT/torrents` and
 they aren't — silent fallback to copying is exactly the failure mode
 hardlinks are meant to prevent.
 
+The bootstrap also enables **Use Hardlinks instead of Copy** and **Skip
+Free Space Check** in Sonarr/Radarr. A completed qBittorrent file has already
+consumed its space on `/data`; without the latter setting, an Arr app can
+incorrectly demand enough free space for a second full copy before it even
+attempts the hardlink. Only use this policy with the verified single-root
+layout above.
+
 #### Automatic low-space guard (with Telegram)
 
 Enabling `docker-compose.telegram.yml` also starts `disk-guard`. It checks
