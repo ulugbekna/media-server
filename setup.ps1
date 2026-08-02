@@ -11,7 +11,7 @@
       displays it together with all service URLs and API keys.
 
 .PARAMETER DataRoot
-    Single parent folder for ALL downloads and media — required for
+    Single parent folder for ALL downloads and media - required for
     Sonarr/Radarr hardlinking. Layout (created automatically):
         DataRoot\torrents\complete\
         DataRoot\torrents\incomplete\
@@ -48,7 +48,7 @@
     Sonarr/Radarr (add qBittorrent download client + root folder, enable
     hardlinks without a duplicate import free-space check, and add a Plex
     auto-scan notifier if Plex is on this host).
-    Default behavior: auto — runs on fresh installs only (so a re-run
+    Default behavior: auto - runs on fresh installs only (so a re-run
     against an established stack doesn't fight your hand-tweaks).
 
 .PARAMETER NoBootstrap
@@ -144,7 +144,7 @@ Write-OK "Config:    $ConfigRootDocker"
 Write-Step "Creating folder layout"
 
 $folders = @(
-    # Single-root data layout — see docker-compose.yml header for why.
+    # Single-root data layout - see docker-compose.yml header for why.
     "$DataRoot\torrents\complete",
     "$DataRoot\torrents\incomplete",
     "$DataRoot\media\tv",
@@ -186,7 +186,7 @@ Write-OK "Disk:      $freeGb GB free on $($drive.Name):"
 
 # --- Same-filesystem (drive) check for hardlink correctness ---
 # Sonarr/Radarr hardlink completed downloads from /data/torrents/... to
-# /data/media/... — that only works if both sub-paths live on the same
+# /data/media/... - that only works if both sub-paths live on the same
 # host drive (single Linux mount inside the container).
 $torrentsDrive = (Get-Item -LiteralPath (Join-Path $DataRoot "torrents")).PSDrive.Name
 $mediaDrive    = (Get-Item -LiteralPath (Join-Path $DataRoot "media")).PSDrive.Name
@@ -254,7 +254,7 @@ function Update-EnvVar([string]$content, [string]$key, [string]$value) {
 }
 
 if (Test-Path -LiteralPath $envPath) {
-    Write-WarnMsg ".env already exists — preserving existing credentials; updating path/UID fields only."
+    Write-WarnMsg ".env already exists - preserving existing credentials; updating path/UID fields only."
     $envContent = Get-Content -LiteralPath $envPath -Raw
     $envContent = Update-EnvVar $envContent "TZ"          $Timezone
     $envContent = Update-EnvVar $envContent "PUID"        "1000"
@@ -411,7 +411,7 @@ $radarrKey   = Get-ArrApiKey  (Join-Path $ConfigRoot "radarr\config.xml")
 $prowlarrKey = Get-ArrApiKey  (Join-Path $ConfigRoot "prowlarr\config.xml")
 
 # -----------------------------------------------------------------------------
-# 7a. Bootstrap — REST-API auto-config so step 4 of README is mostly already done
+# 7a. Bootstrap - REST-API auto-config so step 4 of README is mostly already done
 # -----------------------------------------------------------------------------
 # Same scope as setup.sh's bootstrap. See that script's '6a' block for full
 # rationale.
@@ -421,7 +421,7 @@ $runBootstrap = $false
 if ($Bootstrap)       { $runBootstrap = $true }
 elseif ($NoBootstrap) { $runBootstrap = $false }
 else {
-    # 'auto': fresh install heuristic — Sonarr's config.xml written in last 5 min.
+    # 'auto': fresh install heuristic - Sonarr's config.xml written in last 5 min.
     $sonarrCfg = Join-Path $ConfigRoot "sonarr\config.xml"
     if (Test-Path -LiteralPath $sonarrCfg) {
         $age = (Get-Date) - (Get-Item -LiteralPath $sonarrCfg).LastWriteTime
@@ -459,7 +459,7 @@ if ($runBootstrap) {
                     # the host loopback, and other LAN clients never get tarred
                     # by qBit's brute-force ban. Without this, a few failed
                     # logins from a forgotten password lock OUT every client on
-                    # those subnets — including the Docker network Sonarr/Radarr
+                    # those subnets - including the Docker network Sonarr/Radarr
                     # talk to qBit through. Bans still apply to anyone outside
                     # these ranges (i.e. random internet attackers).
                     bypass_auth_subnet_whitelist_enabled = $true
@@ -493,7 +493,7 @@ if ($runBootstrap) {
             Write-WarnMsg "  qBittorrent: no temp password in logs yet; skipping API config."
         }
 
-        # --- 7a.2 Prowlarr → register Sonarr & Radarr as Apps ----------------
+        # --- 7a.2 Prowlarr -> register Sonarr & Radarr as Apps ---------------
         $existingApps = @()
         try {
             $existingApps = (Invoke-RestMethod -Uri "http://localhost:9696/api/v1/applications" `
@@ -594,13 +594,13 @@ if ($runBootstrap) {
         }
 
         # --- 7a.4 Sonarr & Radarr: Plex auto-scan notifier -------------------
-        # Wires Sonarr/Radarr → Plex Connect so every import triggers a Plex
+        # Wires Sonarr/Radarr -> Plex Connect so every import triggers a Plex
         # library scan immediately (no waiting 1h for Plex's own discovery,
-        # no manual "Scan Library Files" click). Idempotent — skipped if a
+        # no manual "Scan Library Files" click). Idempotent - skipped if a
         # PlexServer notifier is already present or if Plex isn't reachable
         # / no token can be found on this host. Token is read from the
         # Windows HKCU registry (which is where the native PMS install
-        # stores its preferences — Preferences.xml only exists on
+        # stores its preferences - Preferences.xml only exists on
         # Linux/macOS Plex installs).
         function Get-PlexToken {
             try {
@@ -692,7 +692,7 @@ if ($runBootstrap) {
         Set-ArrHardlinkImportPolicy "Sonarr" $sonarrKey 8989
         Set-ArrHardlinkImportPolicy "Radarr" $radarrKey 7878
 
-        # Plex auto-scan wiring — best-effort, skipped if Plex isn't here.
+        # Plex auto-scan wiring - best-effort, skipped if Plex isn't here.
         $plexToken = Get-PlexToken
         if (-not $plexToken) {
             Write-WarnMsg "  Plex notifier skipped: no Plex token in HKCU registry"
@@ -711,7 +711,7 @@ if ($runBootstrap) {
 }
 
 # -----------------------------------------------------------------------------
-# 7b. Telegram bot — generate Searcharr settings.py and start the container
+# 7b. Telegram bot - generate Searcharr settings.py and start the container
 # -----------------------------------------------------------------------------
 $telegramBotPassword      = $null
 $telegramAdminBotPassword = $null
@@ -734,7 +734,7 @@ if ($Telegram) {
         }
 
         if (Test-Path -LiteralPath $searcharrSettings) {
-            Write-WarnMsg "Searcharr settings.py already exists — preserving passwords."
+            Write-WarnMsg "Searcharr settings.py already exists - preserving passwords."
             $existing = Get-Content -LiteralPath $searcharrSettings -Raw
             $pm = [regex]::Match($existing, '(?m)^searcharr_password\s*=\s*"([^"]*)"')
             $am = [regex]::Match($existing, '(?m)^searcharr_admin_password\s*=\s*"([^"]*)"')
@@ -769,7 +769,7 @@ if ($Telegram) {
 }
 
 # -----------------------------------------------------------------------------
-# 7c. Recyclarr — render config and start container
+# 7c. Recyclarr - render config and start container
 # -----------------------------------------------------------------------------
 if ($Recyclarr) {
     Write-Step "Configuring Recyclarr"
@@ -843,7 +843,7 @@ if ($Recyclarr) {
 }
 
 # -----------------------------------------------------------------------------
-# 7d. Caddy reverse proxy — copy Caddyfile and start container
+# 7d. Caddy reverse proxy - copy Caddyfile and start container
 # -----------------------------------------------------------------------------
 if ($Proxy) {
     Write-Step "Configuring Caddy reverse proxy"
@@ -852,7 +852,7 @@ if ($Proxy) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "caddy\Caddyfile.template") -Destination $caddyFile
         Write-OK "Copied Caddyfile template to $caddyFile"
     } else {
-        Write-WarnMsg "Caddyfile already exists — preserving your edits."
+        Write-WarnMsg "Caddyfile already exists - preserving your edits."
     }
     # Adjust qBittorrent upstream when VPN is active.
     if ($Vpn) {
@@ -881,7 +881,7 @@ if ($Proxy) {
         Write-OK "    On your Mac:"
         Write-OK "      sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain caddy-root.crt"
     } else {
-        Write-WarnMsg "Caddy's root cert not generated yet — give it another 30 s then check $($certPath.Substring(1))."
+        Write-WarnMsg "Caddy's root cert not generated yet - give it another 30 s then check $($certPath.Substring(1))."
     }
 }
 
@@ -910,7 +910,7 @@ Write-Host "  *** Do not share this terminal output." -ForegroundColor Yellow
 Write-Host ""
 if ($qbitNewPw) {
     Write-Host "  qBittorrent  user: admin"
-    Write-Host "  qBittorrent  pass: $qbitNewPw   (set by bootstrap — stable across restarts)"
+    Write-Host "  qBittorrent  pass: $qbitNewPw   (set by bootstrap - stable across restarts)"
 } elseif ($qbtPass) {
     Write-Host "  qBittorrent  user: admin"
     Write-Host "  qBittorrent  pass: $qbtPass   <-- TEMP only! Change on first login or a new one is generated next restart."
@@ -935,7 +935,7 @@ Write-Host "  qBittorrent incomplete dir /data/torrents/incomplete"
 Write-Host "  Sonarr TV root folder      /data/media/tv"
 Write-Host "  Radarr Movies root folder  /data/media/movies"
 Write-Host ""
-Write-Host "These all live under the SAME /data mount inside every container —" -ForegroundColor Magenta
+Write-Host "These all live under the SAME /data mount inside every container -" -ForegroundColor Magenta
 Write-Host "that's what makes hardlinking (instant import, 1x disk usage) work."
 if ($Vpn) {
     Write-Host ""
@@ -977,7 +977,7 @@ if ($Proxy) {
     Write-Host "    2. SSH-tunnel port 443 from your Mac. Two options:"
     Write-Host "         sudo ssh -F ~/.ssh/config miniserver       # uses your alias"
     Write-Host "         sudo ssh -L 443:127.0.0.1:443 you@<mini>   # no alias needed"
-    Write-Host "       (sudo runs as root which ignores YOUR ~/.ssh/config — that's why -F.)"
+    Write-Host "       (sudo runs as root which ignores YOUR ~/.ssh/config - that's why -F.)"
     Write-Host "    3. Import Caddy's root CA so the browser stops warning."
     Write-Host "    See README 'Reverse proxy (Caddy)' for the exact commands."
 }
