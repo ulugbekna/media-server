@@ -13,9 +13,10 @@
 #      keys it already extracts from Sonarr/Radarr.
 #   4. In Telegram, message your bot:  /start <password>
 #
-# Searcharr initializes its Sonarr/Radarr clients only once at startup, so it
-# waits for both services' /ping healthchecks before launching. It then talks
-# to them by Docker service name on the default Compose network.
+# Searcharr initializes its Sonarr/Radarr clients only once at startup. Compose
+# dependency ordering does not run when Docker auto-restarts containers after a
+# host reboot, so a container-local gate checks the authenticated Arr APIs on
+# every start before it launches Searcharr.
 # =============================================================================
 
 services:
@@ -24,11 +25,21 @@ services:
     # Pin to a specific digest (same supply-chain discipline as the rest of the stack).
     image: toddrob/searcharr@sha256:a00fd7e02ea6ef0d7c6181fcf7f33929db0d9bda9283f871937d72c0113b1f48
     container_name: searcharr
+    entrypoint: ["python3", "/opt/searcharr-readiness/readiness.py"]
+    command: ["--poll-seconds", "5", "--request-timeout-seconds", "3"]
     volumes:
       - ${CONFIG_ROOT}/searcharr/data:/app/data
       - ${CONFIG_ROOT}/searcharr/logs:/app/logs
+      - ./searcharr_readiness/readiness.py:/opt/searcharr-readiness/readiness.py:ro
     environment:
       - TZ=${TZ:-UTC}
+      - PYTHONDONTWRITEBYTECODE=1
+    healthcheck:
+      test: ["CMD", "python3", "/opt/searcharr-readiness/readiness.py", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     restart: unless-stopped
     depends_on:
       sonarr:
@@ -72,4 +83,4 @@ services:
       qbittorrent:
         condition: service_healthy
       searcharr:
-        condition: service_started
+        condition: service_healthy
