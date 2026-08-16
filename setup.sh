@@ -701,7 +701,7 @@ if [ "$USE_TELEGRAM" = "1" ]; then
         cyan "Starting Searcharr and disk guard"
         docker compose -f docker-compose.yml \
             $([ "$USE_VPN" = "1" ] && echo "-f docker-compose.vpn.yml") \
-            -f docker-compose.telegram.yml up -d searcharr disk-guard
+            -f docker-compose.telegram.yml up -d --force-recreate searcharr disk-guard
     fi
 fi
 

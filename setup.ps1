@@ -759,7 +759,7 @@ if ($Telegram) {
         Write-Step "Starting Searcharr and disk guard"
         $tgArgs = @("compose", "-f", "docker-compose.yml")
         if ($Vpn) { $tgArgs += @("-f", "docker-compose.vpn.yml") }
-        $tgArgs += @("-f", "docker-compose.telegram.yml", "up", "-d", "searcharr", "disk-guard")
+        $tgArgs += @("-f", "docker-compose.telegram.yml", "up", "-d", "--force-recreate", "searcharr", "disk-guard")
         & docker @tgArgs
         if ($LASTEXITCODE -ne 0) {
             Write-ErrMsg "Starting Searcharr and disk guard failed."
