@@ -10,10 +10,11 @@ A drop-in, one-command Docker setup for the stack from
 | Sonarr       | TV-show automation                   | http://localhost:8989   |
 | Radarr       | Movie automation                     | http://localhost:7878   |
 | Bazarr       | Subtitle automation                  | http://localhost:6767   |
-| Overseerr    | Pretty request UI on top of *arr     | http://localhost:5055   |
-| Plex         | Media server (installed natively)    | http://localhost:32400  |
+| Overseerr    | Open-source discovery/request UI     | http://localhost:5055   |
+| Plex         | Netflix-like player (proprietary)    | http://localhost:32400  |
 | Gluetun      | (optional) VPN for qBittorrent       | —                       |
 | Searcharr    | (optional) Telegram bot for requests | (Telegram chat)         |
+| Status sync  | (with Telegram) movie status updates | (background service)    |
 | Disk guard   | (with Telegram) low-space protection | (background service)    |
 
 > The dev.to article uses **Jackett** as the indexer proxy. This stack uses
@@ -1597,6 +1598,10 @@ The script:
   Searcharr, which does not retry a failed client initialization.
 - Starts the low-space disk guard documented under
   [Automatic low-space guard](#automatic-low-space-guard-with-telegram).
+- Starts `telegram-status-sync`, which maintains one internal Radarr webhook
+  and sends its events to the currently authorized Searcharr users. Later user
+  enrolments and revocations apply automatically; Radarr never receives the
+  bot token or chat IDs.
 - Prints the bot password at the end. Save it.
 
 ### 4. Use the bot
@@ -1612,6 +1617,35 @@ In Telegram, message your bot:
 Tap the "Add" button on the result; Sonarr/Radarr take over from there.
 Every item added via the bot is auto-tagged `telegram` in Sonarr/Radarr so
 you can filter or set tag-specific rules later.
+
+### Movie download status
+
+There are three distinct states:
+
+1. **Downloading:** Radarr → **Activity → Queue** shows progress and errors.
+2. **Downloaded but not imported:** qBittorrent shows 100%, but Radarr's queue
+   still contains the movie with an import warning.
+3. **Ready to watch:** the Radarr movie page says **Downloaded**, has a non-zero
+   file size, and the movie appears in Plex after its library scan.
+
+The same Telegram bot sends every authorized Searcharr user updates when a
+movie is added, grabbed, imported/upgraded, or requires manual intervention.
+Radarr sends one internal webhook; `telegram-status-sync` refreshes and
+persists the authorized-user list, then durably queues one delivery per
+cached recipient before acknowledging Radarr. Successful deliveries are removed;
+failures retry with backoff, and revocations cancel pending deliveries without
+storing raw chat IDs. It also reconciles Radarr history/queue records, so
+grab/import events emitted during a container-restart race are recovered
+without duplicate alerts. Searcharr continues to own incoming commands.
+
+```powershell
+# Inspect synchronization without printing any identifiers or secrets:
+docker logs --tail 50 telegram-status-sync
+
+# Reconcile immediately instead of waiting for the next poll. Restart the
+# singleton service; do not run a second worker against the same state DB.
+docker restart telegram-status-sync
+```
 
 ### Authentication model (read this)
 
@@ -1698,8 +1732,8 @@ Open an issue if you'd like this added as a first-class option.
 - **The bot token equals full control of the bot.** Treat it like a password.
   If leaked, send `/revoke` to BotFather to invalidate it, then update `.env`
   and re-run setup.
-- The disk guard reads the token and enrolled user IDs from Searcharr's
-  read-only data mount. It logs only recipient/torrent counts, never those
+- The disk guard and Telegram status sync read the token and enrolled user IDs
+  from Searcharr's read-only data mount. They log only counts, never those
   secrets or identifiers.
 - **Searcharr's data folder contains the token in plaintext** (`settings.py`).
   It lives under `config/searcharr/data/`, which is git-ignored. The setup
@@ -1713,10 +1747,11 @@ Overseerr's Telegram integration only **sends notifications** to a channel
 (e.g. "movie X is ready"). It does **not** accept incoming requests via chat.
 For two-way request flow you need a separate bot like Searcharr.
 
-If you want both — Searcharr for requesting + Overseerr notifications for
-"ready to watch" alerts — that's fine; they don't conflict. Configure
-Overseerr's Telegram channel separately under **Settings → Notifications →
-Telegram**.
+The scaffold uses Radarr's native lifecycle events through an internal webhook
+because Radarr knows the exact grab/import/manual-intervention state. The bot
+token and chat IDs remain inside the status service rather than Radarr.
+Overseerr's notification channel remains optional and can coexist, but enabling
+matching events there may produce duplicate messages.
 
 ---
 
@@ -1730,6 +1765,7 @@ Telegram**.
 | `setup.ps1` blocked by execution policy        | `powershell -ExecutionPolicy Bypass -File .\setup.ps1`                                                |
 | Sonarr/Radarr can't reach Prowlarr or qBittorrent | Use the **service name** as the hostname (`prowlarr`, `qbittorrent`), not `localhost` or `127.0.0.1`. |
 | `disk-guard` is unhealthy | Run `docker logs disk-guard`. HTTP 403 means qBittorrent did not trust the Compose network; other explicit errors identify unavailable qBittorrent, Telegram, Searcharr DB, or state storage. The guard does not auto-resume anything after recovery. |
+| `telegram-status-sync` is unhealthy | Run `docker logs telegram-status-sync`. It needs readable Searcharr settings/users and authenticated access to Radarr. It never logs the token or chat IDs. |
 | `localhost:8989` / `localhost:7878` keeps opening a **native** Sonarr/Radarr you installed earlier (not the Docker container) | A native install owns the port; Docker silently fails to publish. Fix: [Already running Sonarr/Radarr natively on this machine?](#already-running-sonarrradarr-natively-on-this-machine) |
 | Can't reach Sonarr/Radarr/Prowlarr/qBittorrent from another LAN device | By design — admin UIs are bound to `127.0.0.1` on the mini-PC. Use the SSH tunnel pattern in [Remote management](#remote-management-ssh). |
 | Prowlarr: indexer red, error "Cloudflare challenge" | Add the FlareSolverr container (see Prowlarr section), then in Prowlarr → Settings → Indexers → Add Indexer Proxy → FlareSolverr with host `http://flaresolverr:8191/`. |

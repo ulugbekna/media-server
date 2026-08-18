@@ -71,6 +71,7 @@ mkdir -p "$DATA_ROOT"/media/{tv,movies}
 mkdir -p "$CONFIG_ROOT"/{prowlarr,qbittorrent,sonarr,radarr,bazarr,overseerr}
 mkdir -p "$CONFIG_ROOT"/searcharr/{data,logs}
 mkdir -p "$CONFIG_ROOT"/disk-guard
+mkdir -p "$CONFIG_ROOT"/telegram-status-sync
 mkdir -p "$CONFIG_ROOT"/recyclarr
 mkdir -p "$CONFIG_ROOT"/caddy/{data,config}
 
@@ -698,10 +699,11 @@ if [ "$USE_TELEGRAM" = "1" ]; then
             searcharr-settings.template.py > "$searcharr_settings"
         chmod 600 "$searcharr_settings"
         green "Wrote $searcharr_settings"
-        cyan "Starting Searcharr and disk guard"
+        cyan "Starting Searcharr, movie-status sync, and disk guard"
         docker compose -f docker-compose.yml \
             $([ "$USE_VPN" = "1" ] && echo "-f docker-compose.vpn.yml") \
-            -f docker-compose.telegram.yml up -d --force-recreate searcharr disk-guard
+            -f docker-compose.telegram.yml up -d --force-recreate \
+            searcharr telegram-status-sync disk-guard
     fi
 fi
 

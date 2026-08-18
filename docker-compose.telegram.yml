@@ -47,6 +47,38 @@ services:
       radarr:
         condition: service_healthy
 
+  telegram-status-sync:
+    # Keeps Radarr's Telegram notifications aligned with Searcharr's
+    # authorized users, including additions and revocations.
+    image: toddrob/searcharr@sha256:a00fd7e02ea6ef0d7c6181fcf7f33929db0d9bda9283f871937d72c0113b1f48
+    container_name: telegram-status-sync
+    entrypoint: ["python3", "/opt/telegram-status-sync/sync.py"]
+    command: ["--listen-port", "8081", "--poll-seconds", "60"]
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      - TZ=${TZ:-UTC}
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - ${CONFIG_ROOT}/searcharr/data:/searcharr:ro
+      - ${CONFIG_ROOT}/telegram-status-sync:/state
+      - ./telegram_status_sync/sync.py:/opt/telegram-status-sync/sync.py:ro
+    expose:
+      - "8081"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,nosuid,nodev,noexec
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python3", "/opt/telegram-status-sync/sync.py", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
   disk-guard:
     # Reuse Searcharr's pinned Python image; the guard itself uses stdlib only.
     # tag: toddrob/searcharr:latest
